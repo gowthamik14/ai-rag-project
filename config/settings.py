@@ -29,7 +29,10 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------------ #
     # Firestore
+    # Set FIRESTORE_ENABLED=false to run without Firestore (local-only mode).
+    # Sessions and document persistence will be disabled but Q&A still works.
     # ------------------------------------------------------------------ #
+    firestore_enabled: bool = True
     google_application_credentials: str = Field(
         default="config/firestore_service_account.json",
         description="Path to GCP service-account JSON file.",
@@ -43,12 +46,12 @@ class Settings(BaseSettings):
     firestore_sessions_collection: str = "rag_sessions"
 
     # ------------------------------------------------------------------ #
-    # LLM via Ollama  (default: Qwen 2.5 7B)
-    # Start Ollama:  OLLAMA_NO_GPU=1 ollama serve
-    # Pull model:    ollama pull qwen2.5:7b
+    # LLM via Ollama  (default: Qwen)
+    # Start Ollama:  OLLAMA_NO_GPU=1 OLLAMA_LLM_LIBRARY=cpu ollama serve
+    # Pull model:    ollama pull qwen:latest
     # ------------------------------------------------------------------ #
     ollama_base_url: str = "http://localhost:11434"
-    llm_model: str = "qwen:latest"           # model tag as listed in `ollama list`
+    llm_model: str = "qwen:latest"
     llm_temperature: float = 0.7
     llm_max_tokens: int = 2048
     llm_timeout: int = 180                   # seconds — CPU mode is slower
@@ -56,7 +59,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # Embeddings
     # ------------------------------------------------------------------ #
-    embedding_model: str = "all-MiniLM-L6-v2"  # sentence-transformers model
+    embedding_model: str = "all-MiniLM-L6-v2"
     embedding_dimension: int = 384
 
     # ------------------------------------------------------------------ #
@@ -82,6 +85,23 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Auto-disable Firestore if credentials file contains placeholder values
+def _creds_are_placeholder() -> bool:
+    path = settings.google_application_credentials
+    if not os.path.exists(path):
+        return True
+    try:
+        import json
+        with open(path) as f:
+            data = json.load(f)
+        return data.get("private_key", "") in ("REPLACE_ME", "", None)
+    except Exception:
+        return True
+
+if settings.firestore_enabled and _creds_are_placeholder():
+    # Silently switch to local-only mode instead of crashing
+    object.__setattr__(settings, "firestore_enabled", False)
 
 # Make sure the FAISS data directory exists at import time
 Path(settings.faiss_index_path).mkdir(parents=True, exist_ok=True)
