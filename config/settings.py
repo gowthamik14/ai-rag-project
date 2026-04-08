@@ -44,12 +44,14 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------------ #
     # LLM via Ollama  (default: Qwen 2.5 7B)
+    # Start Ollama:  OLLAMA_NO_GPU=1 ollama serve
+    # Pull model:    ollama pull qwen2.5:7b
     # ------------------------------------------------------------------ #
     ollama_base_url: str = "http://localhost:11434"
-    gemma_model: str = "qwen2.5:7b"          # model tag as listed in `ollama list`
-    gemma_temperature: float = 0.7
-    gemma_max_tokens: int = 2048
-    gemma_timeout: int = 180                  # seconds — CPU mode is slower
+    llm_model: str = "qwen:latest"           # model tag as listed in `ollama list`
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 2048
+    llm_timeout: int = 180                   # seconds — CPU mode is slower
 
     # ------------------------------------------------------------------ #
     # Embeddings

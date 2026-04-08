@@ -1,21 +1,24 @@
 """
-LLM connector via Ollama's HTTP API.
+OllamaLLM — LLM connector via Ollama's HTTP API.
 
-Ollama must be running locally:
-  OLLAMA_NO_GPU=1 ollama serve        ← use this on Macs with Metal issues
+Supports any model served by Ollama. Default: qwen2.5:7b
 
-Model must be pulled first:
-  ollama pull qwen2.5:7b              ← default model
+Start Ollama:
+  OLLAMA_NO_GPU=1 ollama serve      ← required on Macs with Metal/GPU issues
 
-The class exposes:
+Pull the model first:
+  ollama pull qwen2.5:7b
+
+Public interface:
   - generate(prompt)          → str
   - chat(messages)            → str   (OpenAI-style message list)
   - stream_generate(prompt)   → Iterator[str]
+  - health_check()            → bool
 """
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Generator, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
@@ -25,8 +28,8 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-class GemmaLLM:
-    """Thin client for a locally-running GEMMA model served by Ollama."""
+class OllamaLLM:
+    """Thin async-free client for any model served by a local Ollama instance."""
 
     def __init__(
         self,
@@ -35,25 +38,25 @@ class GemmaLLM:
         max_tokens: Optional[int] = None,
         base_url: Optional[str] = None,
     ) -> None:
-        self.model = model or settings.gemma_model
-        self.temperature = temperature if temperature is not None else settings.gemma_temperature
-        self.max_tokens = max_tokens or settings.gemma_max_tokens
-        self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
-        self._client = httpx.Client(timeout=settings.gemma_timeout)
+        self.model       = model or settings.llm_model
+        self.temperature = temperature if temperature is not None else settings.llm_temperature
+        self.max_tokens  = max_tokens or settings.llm_max_tokens
+        self.base_url    = (base_url or settings.ollama_base_url).rstrip("/")
+        self._client     = httpx.Client(timeout=settings.llm_timeout)
 
     # ------------------------------------------------------------------ #
     # Public interface
     # ------------------------------------------------------------------ #
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
-        """Single-turn generation. Returns the full response string."""
+        """Single-turn text generation. Returns the full response string."""
         payload = self._build_generate_payload(prompt, system_prompt)
         logger.debug("LLM generate | model=%s | prompt_len=%d", self.model, len(prompt))
 
         response = self._client.post(f"{self.base_url}/api/generate", json=payload)
         response.raise_for_status()
 
-        # Ollama streams NDJSON; aggregate all tokens
+        # Ollama streams NDJSON — aggregate all tokens into one string
         full_text = ""
         for line in response.text.strip().splitlines():
             if line:
@@ -72,7 +75,6 @@ class GemmaLLM:
     ) -> str:
         """
         Multi-turn chat completion.
-
         messages: [{"role": "user"|"assistant", "content": "..."}]
         """
         payload = self._build_chat_payload(messages, system_prompt)
@@ -85,8 +87,7 @@ class GemmaLLM:
         for line in response.text.strip().splitlines():
             if line:
                 chunk = json.loads(line)
-                msg = chunk.get("message", {})
-                full_text += msg.get("content", "")
+                full_text += chunk.get("message", {}).get("content", "")
                 if chunk.get("done"):
                     break
 
@@ -110,7 +111,7 @@ class GemmaLLM:
                         break
 
     def health_check(self) -> bool:
-        """Return True if Ollama is reachable and the model is available."""
+        """Return True if Ollama is reachable and the configured model is available."""
         try:
             resp = self._client.get(f"{self.base_url}/api/tags")
             resp.raise_for_status()

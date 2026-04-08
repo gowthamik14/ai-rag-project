@@ -22,7 +22,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "RAG service powered by GEMMA (local via Ollama) "
+            f"RAG service powered by {settings.llm_model} (local via Ollama) "
             "and Firestore document storage."
         ),
     )

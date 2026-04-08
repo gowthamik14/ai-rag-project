@@ -9,6 +9,7 @@ from workflows.base_workflow import WorkflowStatus
 from workflows.ingestion_workflow import IngestionWorkflow
 from workflows.qa_workflow import QAWorkflow
 from workflows.summarization_workflow import SummarizationWorkflow
+from core.llm import OllamaLLM
 from rag.pipeline import RAGPipeline, RAGResult
 
 
@@ -82,7 +83,7 @@ def test_summarization_requires_input():
 
 
 def test_summarization_inline_text():
-    llm = MagicMock()
+    llm = MagicMock(spec=OllamaLLM)
     llm.generate.return_value = "Short summary."
     wf = SummarizationWorkflow(llm=llm, document_store=MagicMock())
     result = wf.run({"text": "Long document text here. " * 10, "style": "concise"})

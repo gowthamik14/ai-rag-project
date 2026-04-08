@@ -1,5 +1,5 @@
 """
-Generator: builds the prompt from retrieved context and calls GEMMA.
+Generator: builds the prompt from retrieved context and calls the LLM (Qwen via Ollama).
 
 Supports:
   - Single-turn RAG answer
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterator, List, Optional
 
-from core.llm import GemmaLLM
+from core.llm import OllamaLLM
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -46,8 +46,8 @@ Answer:"""
 
 
 class Generator:
-    def __init__(self, llm: Optional[GemmaLLM] = None) -> None:
-        self._llm = llm or GemmaLLM()
+    def __init__(self, llm: Optional[OllamaLLM] = None) -> None:
+        self._llm = llm or OllamaLLM()
 
     # ------------------------------------------------------------------ #
     # Single-turn
@@ -98,7 +98,6 @@ class Generator:
     ) -> str:
         """
         Multi-turn answer generation.
-
         history: list of prior messages [{"role": "user"|"assistant", "content": "..."}]
         """
         messages: List[Dict[str, str]] = list(history or [])

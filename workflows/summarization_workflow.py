@@ -6,7 +6,7 @@ Summarises a document already stored in Firestore (by doc_id) or raw text.
 Steps:
   1. load_content   – fetch doc from Firestore or use inline text
   2. chunk_if_long  – split very long docs into windows
-  3. summarize      – call GEMMA with a summarization prompt
+  3. summarize      – call Qwen with a summarization prompt
   4. merge_summary  – if multiple windows, combine partial summaries
 
 Inputs (dict)
@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from .base_workflow import BaseWorkflow
-from core.llm import GemmaLLM
+from core.llm import OllamaLLM
 from db.document_store import DocumentStore
 from utils.text_splitter import TextSplitter
 from config.settings import settings
@@ -66,12 +66,12 @@ class SummarizationWorkflow(BaseWorkflow):
 
     def __init__(
         self,
-        llm: Optional[GemmaLLM] = None,
+        llm: Optional[OllamaLLM] = None,
         document_store: Optional[DocumentStore] = None,
     ) -> None:
-        self._llm = llm or GemmaLLM()
+        self._llm       = llm or OllamaLLM()
         self._doc_store = document_store or DocumentStore()
-        self._splitter = TextSplitter(chunk_size=self.WINDOW_SIZE, chunk_overlap=100)
+        self._splitter  = TextSplitter(chunk_size=self.WINDOW_SIZE, chunk_overlap=100)
 
     def _validate(self, inputs: Dict[str, Any]) -> None:
         if not inputs.get("doc_id") and not inputs.get("text", "").strip():
@@ -80,9 +80,9 @@ class SummarizationWorkflow(BaseWorkflow):
     @property
     def _steps(self):
         return [
-            ("load_content", self._step_load_content),
+            ("load_content",  self._step_load_content),
             ("chunk_if_long", self._step_chunk_if_long),
-            ("summarize", self._step_summarize),
+            ("summarize",     self._step_summarize),
             ("merge_summary", self._step_merge_summary),
         ]
 
@@ -92,7 +92,7 @@ class SummarizationWorkflow(BaseWorkflow):
 
     def _step_load_content(self, ctx: Dict[str, Any]) -> None:
         inputs = ctx["inputs"]
-        text = inputs.get("text", "")
+        text   = inputs.get("text", "")
 
         if not text and (doc_id := inputs.get("doc_id")):
             doc = self._doc_store.get_document(doc_id)
@@ -100,17 +100,17 @@ class SummarizationWorkflow(BaseWorkflow):
                 raise ValueError(f"Document '{doc_id}' not found in Firestore.")
             text = doc.get("content", "")
 
-        ctx["content"] = text.strip()
-        ctx["style"] = inputs.get("style", "concise")
+        ctx["content"]    = text.strip()
+        ctx["style"]      = inputs.get("style", "concise")
         ctx["max_length"] = int(inputs.get("max_length", 200))
         logger.info("Loaded %d chars for summarization", len(ctx["content"]))
 
     def _step_chunk_if_long(self, ctx: Dict[str, Any]) -> None:
         content = ctx["content"]
-        if len(content) <= self.WINDOW_SIZE:
-            ctx["windows"] = [content]
-        else:
-            ctx["windows"] = self._splitter.split(content)
+        ctx["windows"] = (
+            [content] if len(content) <= self.WINDOW_SIZE
+            else self._splitter.split(content)
+        )
         logger.info("Summarization windows: %d", len(ctx["windows"]))
 
     def _step_summarize(self, ctx: Dict[str, Any]) -> None:
@@ -123,11 +123,9 @@ class SummarizationWorkflow(BaseWorkflow):
                 max_length=ctx["max_length"],
                 text=window,
             )
-            summary = self._llm.generate(
-                prompt=prompt,
-                system_prompt=SUMMARIZATION_SYSTEM_PROMPT,
+            partials.append(
+                self._llm.generate(prompt=prompt, system_prompt=SUMMARIZATION_SYSTEM_PROMPT)
             )
-            partials.append(summary)
             logger.debug("Summarized window %d/%d", i + 1, len(ctx["windows"]))
 
         ctx["partial_summaries"] = partials
@@ -141,18 +139,17 @@ class SummarizationWorkflow(BaseWorkflow):
             partials_text = "\n\n---\n\n".join(
                 f"Section {i+1}:\n{p}" for i, p in enumerate(partials)
             )
-            merge_prompt = MERGE_PROMPT.format(
-                style=ctx["style"],
-                max_length=ctx["max_length"],
-                partials=partials_text,
-            )
             final = self._llm.generate(
-                prompt=merge_prompt,
+                prompt=MERGE_PROMPT.format(
+                    style=ctx["style"],
+                    max_length=ctx["max_length"],
+                    partials=partials_text,
+                ),
                 system_prompt=SUMMARIZATION_SYSTEM_PROMPT,
             )
 
         ctx["output"] = {
-            "summary": final,
-            "style": ctx["style"],
+            "summary":           final,
+            "style":             ctx["style"],
             "windows_processed": len(partials),
         }

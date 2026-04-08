@@ -2,7 +2,7 @@
 WorkflowRouter
 ==============
 Selects and runs the correct workflow based on an 'intent' field,
-or uses GEMMA to auto-classify the intent from the input.
+or uses Qwen (via Ollama) to auto-classify the intent from the input.
 
 Registered workflows:
   ingestion      → IngestionWorkflow
@@ -27,7 +27,7 @@ from .base_workflow import WorkflowResult, WorkflowStatus
 from .ingestion_workflow import IngestionWorkflow
 from .qa_workflow import QAWorkflow
 from .summarization_workflow import SummarizationWorkflow
-from core.llm import GemmaLLM
+from core.llm import OllamaLLM
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -47,8 +47,8 @@ Respond with ONLY one word (ingestion, qa, or summarization):"""
 
 
 class WorkflowRouter:
-    def __init__(self, llm: Optional[GemmaLLM] = None) -> None:
-        self._llm = llm or GemmaLLM()
+    def __init__(self, llm: Optional[OllamaLLM] = None) -> None:
+        self._llm = llm or OllamaLLM()
         self._registry = {
             "ingestion": IngestionWorkflow,
             "qa": QAWorkflow,
@@ -60,7 +60,7 @@ class WorkflowRouter:
         Dispatch to the correct workflow.
 
         If `inputs` contains 'intent', use it directly.
-        Otherwise, ask GEMMA to classify the intent.
+        Otherwise, ask the LLM to classify the intent.
         """
         intent = inputs.pop("intent", None)
 
@@ -90,7 +90,6 @@ class WorkflowRouter:
     # ------------------------------------------------------------------ #
 
     def _detect_intent(self, inputs: Dict[str, Any]) -> str:
-        # Build a human-readable summary of the request
         parts = []
         if q := inputs.get("question"):
             parts.append(q)

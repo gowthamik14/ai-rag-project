@@ -51,10 +51,10 @@ class RAGPipeline:
         top_k: int = 5,
         score_threshold: float = 0.0,
     ) -> None:
-        self._retriever = retriever or Retriever()
-        self._generator = generator or Generator()
-        self._doc_store = document_store or DocumentStore()
-        self._top_k = top_k
+        self._retriever   = retriever or Retriever()
+        self._generator   = generator or Generator()
+        self._doc_store   = document_store or DocumentStore()
+        self._top_k       = top_k
         self._score_threshold = score_threshold
 
     # ------------------------------------------------------------------ #
@@ -69,13 +69,13 @@ class RAGPipeline:
         system_prompt: Optional[str] = None,
     ) -> RAGResult:
         """Single-turn RAG query."""
-        chunks = self._retriever.retrieve(
+        chunks  = self._retriever.retrieve(
             query=question,
             top_k=top_k or self._top_k,
             score_threshold=score_threshold if score_threshold is not None else self._score_threshold,
         )
         context = self._retriever.format_context(chunks)
-        answer = self._generator.generate(
+        answer  = self._generator.generate(
             question=question,
             context=context,
             system_prompt=system_prompt,
@@ -99,7 +99,7 @@ class RAGPipeline:
         system_prompt: Optional[str] = None,
     ) -> Iterator[str]:
         """Stream tokens for a single-turn query."""
-        chunks = self._retriever.retrieve(
+        chunks  = self._retriever.retrieve(
             query=question,
             top_k=top_k or self._top_k,
             score_threshold=score_threshold if score_threshold is not None else self._score_threshold,
@@ -132,15 +132,13 @@ class RAGPipeline:
         Loads history from Firestore, generates an answer, persists the exchange.
         """
         history = self._doc_store.get_session_history(session_id)
-
-        chunks = self._retriever.retrieve(
+        chunks  = self._retriever.retrieve(
             query=question,
             top_k=top_k or self._top_k,
             score_threshold=score_threshold if score_threshold is not None else self._score_threshold,
         )
         context = self._retriever.format_context(chunks)
-
-        answer = self._generator.chat_generate(
+        answer  = self._generator.chat_generate(
             question=question,
             context=context,
             history=history,
@@ -165,10 +163,10 @@ class RAGPipeline:
 
     def health(self) -> Dict[str, Any]:
         from core.vector_store import VectorStore
-        from core.llm import GemmaLLM
+        from core.llm import OllamaLLM
 
-        vs = VectorStore()
-        llm = GemmaLLM()
+        vs  = VectorStore()
+        llm = OllamaLLM()
         return {
             "vector_store_total": vs.total_vectors,
             "llm_available": llm.health_check(),
