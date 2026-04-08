@@ -58,6 +58,8 @@ class QueryResponse(BaseModel):
     question: str
     answer: str
     session_id: Optional[str] = None
+    blocked: bool = False
+    block_reason: Optional[str] = None
     sources: List[SourceChunk] = Field(default_factory=list)
 
 

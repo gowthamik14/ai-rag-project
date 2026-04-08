@@ -1,20 +1,26 @@
 """
 RAGPipeline: orchestrates the full Retrieve → Augment → Generate cycle.
 
+All queries pass through TopicGuardrail first — non-vehicle questions
+are rejected before any retrieval or LLM call is made.
+
 Usage
 -----
 pipeline = RAGPipeline()
 
 # One-shot
-result = pipeline.query("What is the refund policy?")
+result = pipeline.query("What is the tire pressure for a Honda Civic?")
+
+# Blocked (non-vehicle)
+result = pipeline.query("What is the weather today?")
+# → result.blocked == True, result.answer == guardrail message
 
 # Conversational (tracks session in Firestore)
 session_id = pipeline.create_session()
-result = pipeline.chat("What is the refund policy?", session_id=session_id)
-result = pipeline.chat("Can I get a full refund?", session_id=session_id)
+result = pipeline.chat("My brake light is on — what should I do?", session_id=session_id)
 
 # Streaming
-for token in pipeline.stream_query("Summarise the document"):
+for token in pipeline.stream_query("How often should I change engine oil?"):
     print(token, end="", flush=True)
 """
 from __future__ import annotations
@@ -24,6 +30,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from .retriever import Retriever
 from .generator import Generator
+from core.guardrails import TopicGuardrail
 from db.document_store import DocumentStore
 from utils.logger import get_logger
 
@@ -37,24 +44,28 @@ class RAGResult:
     retrieved_chunks: List[Dict[str, Any]] = field(default_factory=list)
     context_used: str = ""
     session_id: Optional[str] = None
+    blocked: bool = False                # True when guardrail rejected the question
+    block_reason: Optional[str] = None  # e.g. "keyword_block", "llm_block"
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class RAGPipeline:
-    """End-to-end RAG pipeline with optional session management."""
+    """End-to-end RAG pipeline restricted to the vehicle domain."""
 
     def __init__(
         self,
         retriever: Optional[Retriever] = None,
         generator: Optional[Generator] = None,
         document_store: Optional[DocumentStore] = None,
+        guardrail: Optional[TopicGuardrail] = None,
         top_k: int = 5,
         score_threshold: float = 0.0,
     ) -> None:
-        self._retriever   = retriever or Retriever()
-        self._generator   = generator or Generator()
-        self._doc_store   = document_store or DocumentStore()
-        self._top_k       = top_k
+        self._retriever       = retriever or Retriever()
+        self._generator       = generator or Generator()
+        self._doc_store       = document_store or DocumentStore()
+        self._guardrail       = guardrail or TopicGuardrail()
+        self._top_k           = top_k
         self._score_threshold = score_threshold
 
     # ------------------------------------------------------------------ #
@@ -68,7 +79,18 @@ class RAGPipeline:
         score_threshold: Optional[float] = None,
         system_prompt: Optional[str] = None,
     ) -> RAGResult:
-        """Single-turn RAG query."""
+        """Single-turn RAG query — blocked if not vehicle-related."""
+        # Guardrail check
+        allowed, reason = self._guardrail.check(question)
+        if not allowed:
+            logger.info("Query blocked by guardrail (%s): %s", reason, question[:80])
+            return RAGResult(
+                question=question,
+                answer=TopicGuardrail.BLOCKED_RESPONSE,
+                blocked=True,
+                block_reason=reason,
+            )
+
         chunks  = self._retriever.retrieve(
             query=question,
             top_k=top_k or self._top_k,
@@ -98,7 +120,13 @@ class RAGPipeline:
         score_threshold: Optional[float] = None,
         system_prompt: Optional[str] = None,
     ) -> Iterator[str]:
-        """Stream tokens for a single-turn query."""
+        """Stream tokens — yields blocked message if not vehicle-related."""
+        allowed, reason = self._guardrail.check(question)
+        if not allowed:
+            logger.info("Stream query blocked by guardrail (%s): %s", reason, question[:80])
+            yield TopicGuardrail.BLOCKED_RESPONSE
+            return
+
         chunks  = self._retriever.retrieve(
             query=question,
             top_k=top_k or self._top_k,
@@ -128,9 +156,21 @@ class RAGPipeline:
         system_prompt: Optional[str] = None,
     ) -> RAGResult:
         """
-        Multi-turn conversational RAG.
-        Loads history from Firestore, generates an answer, persists the exchange.
+        Multi-turn conversational RAG — blocked if not vehicle-related.
+        Blocked exchanges are NOT persisted to the session history.
         """
+        # Guardrail check
+        allowed, reason = self._guardrail.check(question)
+        if not allowed:
+            logger.info("Chat blocked by guardrail (%s): %s", reason, question[:80])
+            return RAGResult(
+                question=question,
+                answer=TopicGuardrail.BLOCKED_RESPONSE,
+                session_id=session_id,
+                blocked=True,
+                block_reason=reason,
+            )
+
         history = self._doc_store.get_session_history(session_id)
         chunks  = self._retriever.retrieve(
             query=question,
@@ -145,7 +185,7 @@ class RAGPipeline:
             system_prompt=system_prompt,
         )
 
-        # Persist exchange to Firestore
+        # Only persist valid vehicle exchanges
         self._doc_store.append_message(session_id, "user", question)
         self._doc_store.append_message(session_id, "assistant", answer)
 

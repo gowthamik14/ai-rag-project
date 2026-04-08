@@ -1,6 +1,10 @@
 """
 Generator: builds the prompt from retrieved context and calls the LLM (Qwen via Ollama).
 
+The LLM is restricted to vehicle-related topics only.
+Off-topic questions are blocked upstream by TopicGuardrail before reaching here,
+but the system prompts below add a second layer of instruction to the model.
+
 Supports:
   - Single-turn RAG answer
   - Multi-turn conversational RAG (with session history)
@@ -16,33 +20,53 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # ------------------------------------------------------------------ #
-# Prompt templates
+# System prompts  — vehicle domain only, no outside knowledge
 # ------------------------------------------------------------------ #
 
-RAG_SYSTEM_PROMPT = """You are a helpful AI assistant. Use ONLY the provided context
-to answer the user's question. If the answer is not in the context, say so clearly.
-Do not make up information. Cite the source numbers (e.g., [1], [2]) when referring
-to specific pieces of context."""
+RAG_SYSTEM_PROMPT = """\
+You are a specialist vehicle assistant. Your knowledge is strictly limited to:
+  - Vehicle maintenance, servicing, and repairs
+  - Vehicle parts, systems, and diagnostics
+  - Driving, fuel economy, and vehicle operations
+  - Vehicle makes, models, recalls, and warranties
+
+Rules you MUST follow:
+  1. Use ONLY the provided context documents to answer questions.
+  2. Do NOT use any external knowledge, browse the internet, or make up information.
+  3. If the answer is not in the context, say: "I don't have that information in the available documents."
+  4. If the question is NOT related to vehicles, respond with:
+     "I can only assist with vehicle-related questions. Please ask me about vehicles, maintenance, repairs, or driving."
+  5. Cite source numbers (e.g., [1], [2]) when referring to specific context.
+  6. Never answer questions about cooking, weather, politics, health, finance, or any non-vehicle topic."""
 
 RAG_PROMPT_TEMPLATE = """\
-Context information:
+Context documents:
 {context}
 
-Question: {question}
+Vehicle-related question: {question}
 
-Answer:"""
+Answer (use only the context above):"""
 
-CONVERSATIONAL_SYSTEM_PROMPT = """You are a helpful conversational AI assistant with access
-to retrieved documents. Use the context to answer questions accurately. Maintain conversation
-continuity based on the message history."""
+CONVERSATIONAL_SYSTEM_PROMPT = """\
+You are a specialist vehicle assistant in an ongoing conversation.
+Your knowledge is strictly limited to vehicles, automotive systems,
+maintenance, repairs, parts, diagnostics, and driving.
+
+Rules you MUST follow:
+  1. Use ONLY the provided context documents and the conversation history to answer.
+  2. Do NOT use external knowledge or browse the internet.
+  3. If the answer is not in the context, say: "I don't have that information in the available documents."
+  4. If the question is NOT about vehicles, respond with:
+     "I can only assist with vehicle-related questions."
+  5. Never answer questions outside the vehicle domain."""
 
 CONVERSATIONAL_PROMPT_TEMPLATE = """\
-Context information:
+Context documents:
 {context}
 
-Current question: {question}
+Current vehicle-related question: {question}
 
-Answer:"""
+Answer (use only the context above):"""
 
 
 class Generator:
@@ -59,7 +83,7 @@ class Generator:
         context: str,
         system_prompt: Optional[str] = None,
     ) -> str:
-        """Generate an answer grounded in the provided context."""
+        """Generate a vehicle-domain answer grounded in the provided context."""
         prompt = RAG_PROMPT_TEMPLATE.format(context=context, question=question)
         answer = self._llm.generate(
             prompt=prompt,

@@ -116,6 +116,8 @@ def query(req: QueryRequest):
     return QueryResponse(
         question=result.question,
         answer=result.answer,
+        blocked=result.blocked,
+        block_reason=result.block_reason,
         sources=[
             SourceChunk(
                 score=c.get("score", 0.0),
@@ -165,6 +167,8 @@ def chat(req: ChatRequest):
         question=result.question,
         answer=result.answer,
         session_id=result.session_id,
+        blocked=result.blocked,
+        block_reason=result.block_reason,
         sources=[
             SourceChunk(
                 score=c.get("score", 0.0),
