@@ -1,8 +1,11 @@
 """
-GEMMA LLM connector via Ollama's HTTP API.
+LLM connector via Ollama's HTTP API.
 
-Ollama must be running locally:  ollama serve
-Model must be pulled first:       ollama pull gemma3:4b
+Ollama must be running locally:
+  OLLAMA_NO_GPU=1 ollama serve        ← use this on Macs with Metal issues
+
+Model must be pulled first:
+  ollama pull qwen2.5:7b              ← default model
 
 The class exposes:
   - generate(prompt)          → str

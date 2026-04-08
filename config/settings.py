@@ -43,13 +43,13 @@ class Settings(BaseSettings):
     firestore_sessions_collection: str = "rag_sessions"
 
     # ------------------------------------------------------------------ #
-    # GEMMA (via Ollama)
+    # LLM via Ollama  (default: Qwen 2.5 7B)
     # ------------------------------------------------------------------ #
     ollama_base_url: str = "http://localhost:11434"
-    gemma_model: str = "gemma3:4b"           # model tag as listed in `ollama list`
+    gemma_model: str = "qwen2.5:7b"          # model tag as listed in `ollama list`
     gemma_temperature: float = 0.7
     gemma_max_tokens: int = 2048
-    gemma_timeout: int = 120                  # seconds
+    gemma_timeout: int = 180                  # seconds — CPU mode is slower
 
     # ------------------------------------------------------------------ #
     # Embeddings
