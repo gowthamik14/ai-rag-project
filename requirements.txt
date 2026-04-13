@@ -1,32 +1,26 @@
-# ── Web framework ─────────────────────────────────────────────────────────────
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
-
-# ── Settings ──────────────────────────────────────────────────────────────────
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 python-dotenv>=1.0.0
 
-# ── HTTP client (Ollama) ──────────────────────────────────────────────────────
-httpx>=0.27.0
+# langchain
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-ollama>=0.2.0
+langchain-huggingface>=0.1.0
+langchain-text-splitters>=0.3.0
+langgraph>=0.2.0
 
-# ── Embeddings ────────────────────────────────────────────────────────────────
-sentence-transformers>=2.7.0
-torch>=2.3.0                  # CPU-only install: torch>=2.3.0+cpu (see PyTorch website)
-
-# ── Vector store ──────────────────────────────────────────────────────────────
+# vector store + embeddings
 faiss-cpu>=1.8.0
+sentence-transformers>=2.7.0
+torch>=2.3.0
 
-# ── Firestore ─────────────────────────────────────────────────────────────────
-google-cloud-firestore>=2.16.0
+# google
+google-cloud-bigquery>=3.11.0
 google-auth>=2.29.0
 
-# ── Numpy ─────────────────────────────────────────────────────────────────────
-numpy>=1.26.0
-
-# ── PDF support (optional) ────────────────────────────────────────────────────
-pypdf>=4.2.0
-
-# ── Testing ───────────────────────────────────────────────────────────────────
+# testing
 pytest>=8.2.0
-pytest-asyncio>=0.23.0
+httpx>=0.27.0

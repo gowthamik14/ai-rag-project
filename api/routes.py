@@ -1,221 +1,80 @@
-"""
-FastAPI route definitions.
+import json
 
-Singletons (_pipeline, _router_wf) are created lazily on first request
-so the app starts cleanly even when Firestore or Ollama are not yet available.
-"""
-from __future__ import annotations
+from fastapi import APIRouter, Depends
 
-from typing import Optional
-
-from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import StreamingResponse
-
-from .schemas import (
+from api.schemas import (
+    AuthorisedKnowledgeRequest,
+    AuthorisedKnowledgeResponse,
     ChatRequest,
-    HealthResponse,
-    IngestFileRequest,
-    IngestResponse,
-    IngestTextRequest,
-    QueryRequest,
-    QueryResponse,
-    RouteRequest,
-    RouteResponse,
-    SourceChunk,
-    SummarizeRequest,
-    SummarizeResponse,
+    ChatResponse,
 )
-from utils.logger import get_logger
+from rag.graph import BaseRAGGraph, get_rag_graph
+from services.llm_service import LLMService, get_llm_service
 
-logger = get_logger(__name__)
-
-# ------------------------------------------------------------------ #
-# Lazy singletons — created on first use, not at import time
-# ------------------------------------------------------------------ #
-_pipeline = None
-_router_wf = None
+health_router               = APIRouter()
+chat_router                 = APIRouter()
+authorised_knowledge_router = APIRouter()
 
 
-def _get_pipeline():
-    global _pipeline
-    if _pipeline is None:
-        from rag.pipeline import RAGPipeline
-        _pipeline = RAGPipeline()
-    return _pipeline
+# ── /health ────────────────────────────────────────────────────────────────────
+
+@health_router.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
 
 
-def _get_router_wf():
-    global _router_wf
-    if _router_wf is None:
-        from workflows import WorkflowRouter
-        _router_wf = WorkflowRouter()
-    return _router_wf
+# ── /chat ──────────────────────────────────────────────────────────────────────
+
+@chat_router.post("/chat")
+def chat(
+    req: ChatRequest,
+    service: LLMService = Depends(get_llm_service),
+) -> ChatResponse:
+    reply = service.chat(req.message)
+    return ChatResponse(reply=reply)
 
 
-# ------------------------------------------------------------------ #
-# Routers
-# ------------------------------------------------------------------ #
-health_router   = APIRouter(tags=["Health"])
-ingest_router   = APIRouter(prefix="/ingest",    tags=["Ingestion"])
-query_router    = APIRouter(prefix="/query",     tags=["Q&A"])
-chat_router     = APIRouter(prefix="/chat",      tags=["Chat"])
-summarize_router = APIRouter(prefix="/summarize", tags=["Summarization"])
-route_router    = APIRouter(prefix="/route",     tags=["Router"])
+# ── /authorised-knowledge ──────────────────────────────────────────────────────
 
+@authorised_knowledge_router.post("/authorised-knowledge")
+def get_authorised_knowledge(
+    req: AuthorisedKnowledgeRequest,
+    rag_graph: BaseRAGGraph = Depends(get_rag_graph),
+) -> AuthorisedKnowledgeResponse:
+    """Run the RAG pipeline to retrieve relevant repair data and assess authorisation.
 
-# ------------------------------------------------------------------ #
-# Health
-# ------------------------------------------------------------------ #
+    The LLM is asked to end its response with VERDICT: AUTHORISED or
+    VERDICT: NOT AUTHORISED so the result can be parsed reliably.
+    """
+    question = (
+        f"A '{req.job_title}' repair on a {req.make} {req.model} "
+        f"costing £{req.job_cost:.2f} has been submitted for authorisation."
+    )
 
-@health_router.get("/health", response_model=HealthResponse)
-def health_check():
+    knowledge = rag_graph.run(
+        question,
+        job_title=req.job_title,
+        model=req.model,
+        make=req.make,
+    )
+
     try:
-        info = _get_pipeline().health()
-        return HealthResponse(
-            status="ok",
-            vector_store_total=info["vector_store_total"],
-            llm_available=info["llm_available"],
-        )
-    except Exception as exc:
-        logger.error("Health check failed: %s", exc)
-        return HealthResponse(status="degraded", vector_store_total=0, llm_available=False)
+        parsed = json.loads(knowledge)
+        knowledge = str(parsed.get("reasoning", knowledge))
+        verdict = str(parsed.get("verdict", "")).upper().strip()
+        can_be_authorised = verdict == "AUTHORISED"
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        # Fallback: look for VERDICT: marker in free-text responses.
+        verdict_marker = "VERDICT:"
+        upper = knowledge.upper()
+        if verdict_marker in upper:
+            split_at = upper.rindex(verdict_marker)
+            after_verdict = upper[split_at + len(verdict_marker):].strip()
+            can_be_authorised = after_verdict.startswith("AUTHORISED")
+        else:
+            can_be_authorised = False
 
-
-# ------------------------------------------------------------------ #
-# Ingestion
-# ------------------------------------------------------------------ #
-
-@ingest_router.post("/text", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
-def ingest_text(req: IngestTextRequest):
-    from workflows import IngestionWorkflow
-    result = IngestionWorkflow().run({
-        "text":     req.text,
-        "doc_id":   req.doc_id,
-        "metadata": req.metadata,
-    })
-    if result.status.value == "failed":
-        raise HTTPException(status_code=422, detail=result.errors)
-    return IngestResponse(**result.output)
-
-
-@ingest_router.post("/file", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
-def ingest_file(req: IngestFileRequest):
-    from workflows import IngestionWorkflow
-    result = IngestionWorkflow().run({
-        "file_path": req.file_path,
-        "doc_id":    req.doc_id,
-        "metadata":  req.metadata,
-    })
-    if result.status.value == "failed":
-        raise HTTPException(status_code=422, detail=result.errors)
-    return IngestResponse(**result.output)
-
-
-# ------------------------------------------------------------------ #
-# Q&A
-# ------------------------------------------------------------------ #
-
-@query_router.post("", response_model=QueryResponse)
-def query(req: QueryRequest):
-    result = _get_pipeline().query(
-        question=req.question,
-        top_k=req.top_k,
-        score_threshold=req.score_threshold,
+    return AuthorisedKnowledgeResponse(
+        knowledge=knowledge,
+        canbeAuthorised=can_be_authorised,
     )
-    return QueryResponse(
-        question=result.question,
-        answer=result.answer,
-        blocked=result.blocked,
-        block_reason=result.block_reason,
-        sources=[
-            SourceChunk(
-                score=c.get("score", 0.0),
-                source=c.get("source", c.get("doc_id", "")),
-                chunk_index=c.get("chunk_index"),
-                text_preview=c.get("text", "")[:200],
-            )
-            for c in result.retrieved_chunks
-        ],
-    )
-
-
-@query_router.post("/stream")
-def query_stream(req: QueryRequest):
-    """Server-sent event stream for token-by-token answers."""
-    def token_generator():
-        for token in _get_pipeline().stream_query(
-            question=req.question,
-            top_k=req.top_k,
-            score_threshold=req.score_threshold,
-        ):
-            yield token
-
-    return StreamingResponse(token_generator(), media_type="text/plain")
-
-
-# ------------------------------------------------------------------ #
-# Chat (conversational)
-# ------------------------------------------------------------------ #
-
-@chat_router.post("", response_model=QueryResponse)
-def chat(req: ChatRequest):
-    pipeline   = _get_pipeline()
-    session_id = req.session_id
-
-    if not session_id:
-        session_id = pipeline.create_session(user_id=req.user_id)
-        logger.info("Created new session: %s", session_id)
-
-    result = pipeline.chat(
-        question=req.question,
-        session_id=session_id,
-        top_k=req.top_k,
-    )
-    return QueryResponse(
-        question=result.question,
-        answer=result.answer,
-        session_id=result.session_id,
-        blocked=result.blocked,
-        block_reason=result.block_reason,
-        sources=[
-            SourceChunk(
-                score=c.get("score", 0.0),
-                source=c.get("source", c.get("doc_id", "")),
-                chunk_index=c.get("chunk_index"),
-                text_preview=c.get("text", "")[:200],
-            )
-            for c in result.retrieved_chunks
-        ],
-    )
-
-
-# ------------------------------------------------------------------ #
-# Summarization
-# ------------------------------------------------------------------ #
-
-@summarize_router.post("", response_model=SummarizeResponse)
-def summarize(req: SummarizeRequest):
-    from workflows import SummarizationWorkflow
-    inputs = {"style": req.style, "max_length": req.max_length}
-    if req.doc_id:
-        inputs["doc_id"] = req.doc_id
-    if req.text:
-        inputs["text"] = req.text
-
-    result = SummarizationWorkflow().run(inputs)
-    if result.status.value == "failed":
-        raise HTTPException(status_code=422, detail=result.errors)
-    return SummarizeResponse(**result.output)
-
-
-# ------------------------------------------------------------------ #
-# Intent-based router
-# ------------------------------------------------------------------ #
-
-@route_router.post("", response_model=RouteResponse)
-def route(req: RouteRequest):
-    inputs = dict(req.payload)
-    if req.intent:
-        inputs["intent"] = req.intent
-    result = _get_router_wf().route(inputs)
-    return RouteResponse(**result.to_dict())

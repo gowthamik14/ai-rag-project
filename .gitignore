@@ -1,4 +1,4 @@
-# Python
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
@@ -10,30 +10,34 @@ dist/
 build/
 *.whl
 
-# Virtual environments
+# ── Virtual environments ──────────────────────────────────────────────────────
 .venv/
 venv/
 env/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
 .env
+config/service_account.json
 
-# Secrets / credentials
-*.json
-!config/firestore_service_account.json.example
+# ── GCP / BigQuery index data (generated at runtime, not source) ──────────────
+data/*.faiss
+data/*.pkl
+data/*.json
 
-# FAISS index data
-data/
-
-# Pytest / coverage
+# ── Pytest / coverage ─────────────────────────────────────────────────────────
 .pytest_cache/
 .coverage
 htmlcov/
 *.xml
 
-# IDE
+# ── IDE ───────────────────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# macOS
+# ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
+
+# ── Claude Code ───────────────────────────────────────────────────────────────
+.claude/
