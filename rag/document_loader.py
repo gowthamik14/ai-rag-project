@@ -91,20 +91,25 @@ class BigQueryDocumentLoader(DocumentLoader):
         return loader.load()
 
 
-def create_model_loader(model: str, make: str) -> DocumentLoader:
+def create_model_loader(model: str, make: str, job_cost: float) -> DocumentLoader:
     """Return a loader that fetches repair history for a specific vehicle make/model.
 
     - page_content  → repair_description (what FAISS embeds for similarity search)
-    - metadata      → car_make, car_model, car_variant, jobLineStatus, job_status_date
+    - metadata      → car_make, car_model, car_variant, jobLineStatus, job_status_date, repair_cost
 
+    Args:
+        model:    Vehicle model name (e.g. "Ford Focus").
+        make:     Vehicle make (e.g. "Ford").
     """
+
     query = (
-        f"SELECT car_make, car_model, car_variant, repair_description, jobLineStatus, job_status_date "
+        f"SELECT car_make, car_model, car_variant, repair_description, jobLineStatus, job_status_date, repair_cost, job_status_updated_by_user "
         f"FROM `{settings.gcp_project_id}.{settings.bigquery_dataset}.repair_data` "
-        f"WHERE LOWER(car_make) = LOWER('{make}') AND LOWER(car_model) = LOWER('{model}')"
+        f"WHERE LOWER(car_make) = LOWER('{make}') AND LOWER(car_model) = LOWER('{model}') "
+        f"ORDER BY job_status_date DESC"
     )
     return BigQueryDocumentLoader(
         query=query,
         page_content_columns=["repair_description"],
-        metadata_columns=["car_make", "car_model", "car_variant", "jobLineStatus", "job_status_date"],
+        metadata_columns=["car_make", "car_model", "car_variant", "jobLineStatus", "job_status_date", "repair_cost", "job_status_updated_by_user"],
     )

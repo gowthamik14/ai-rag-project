@@ -18,13 +18,15 @@ class FakeRAGGraph(BaseRAGGraph):
         self.received_job_title: str | None = None
         self.received_model: str | None = None
         self.received_make: str | None = None
+        self.received_job_cost: float | None = None
         self.call_count = 0
 
-    def run(self, question: str, job_title: str, model: str, make: str) -> str:
+    def run(self, question: str, job_title: str, model: str, make: str, job_cost: float) -> str:
         self.received_question = question
         self.received_job_title = job_title
         self.received_model = model
         self.received_make = make
+        self.received_job_cost = job_cost
         self.call_count += 1
         return self.knowledge
 
@@ -32,7 +34,7 @@ class FakeRAGGraph(BaseRAGGraph):
 class ErrorRAGGraph(BaseRAGGraph):
     """Always raises — simulates a pipeline failure."""
 
-    def run(self, question: str, job_title: str, model: str, make: str) -> str:
+    def run(self, question: str, job_title: str, model: str, make: str, job_cost: float) -> str:
         raise RuntimeError("RAG pipeline failed")
 
 
@@ -151,6 +153,13 @@ def test_make_forwarded_to_rag_graph(
 ) -> None:
     client.post("/authorised-knowledge", json={**VALID_PAYLOAD, "make": "BMW"})
     assert fake_graph.received_make == "BMW"
+
+
+def test_job_cost_forwarded_to_rag_graph(
+    client: TestClient, fake_graph: FakeRAGGraph
+) -> None:
+    client.post("/authorised-knowledge", json={**VALID_PAYLOAD, "job_cost": 299.99})
+    assert fake_graph.received_job_cost == 299.99
 
 
 # ── verdict parsing ────────────────────────────────────────────────────────────

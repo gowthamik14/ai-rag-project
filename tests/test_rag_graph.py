@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+import json
 
 import pytest
 from langchain_core.documents import Document
@@ -8,21 +8,17 @@ from langchain_core.embeddings import Embeddings
 
 from config.settings import settings
 from rag.document_loader import DocumentLoader
-from rag.graph import RAGGraph, RAGState, get_rag_graph
-from services.llm_service import LLMService
+from rag.graph import (
+    RAGGraph,
+    RAGState,
+    _COST_TOLERANCE_MULTIPLIER,
+    _SIMILARITY_SCORE_BUFFER,
+    _is_authorised_status,
+    get_rag_graph,
+)
 
 
 # ── test doubles ───────────────────────────────────────────────────────────────
-
-class FakeLLMService(LLMService):
-    def __init__(self, reply: str = "mocked answer") -> None:
-        self.reply = reply
-        self.received_prompt: str | None = None
-
-    def chat(self, message: str) -> str:
-        self.received_prompt = message
-        return self.reply
-
 
 class FakeDocumentLoader(DocumentLoader):
     def __init__(self, documents: list[Document] | None = None) -> None:
@@ -45,15 +41,21 @@ class FakeEmbeddings(Embeddings):
 
 
 class FakeVectorStore:
-    """Stub vector store — returns documents as-is without calling FAISS."""
+    """Stub vector store — returns documents as-is without calling FAISS.
+
+    All documents are returned with a uniform score of 0.0 so that every chunk
+    passes the _SIMILARITY_SCORE_BUFFER filter in _retrieve.
+    """
 
     def __init__(self, documents: list[Document]) -> None:
         self._documents = documents
         self.last_query: str | None = None
 
-    def similarity_search(self, query: str, k: int = 5) -> list[Document]:
+    def similarity_search_with_score(
+        self, query: str, k: int = 5
+    ) -> list[tuple[Document, float]]:
         self.last_query = query
-        return self._documents[:k]
+        return [(doc, 0.0) for doc in self._documents[:k]]
 
 
 # ── fixtures ───────────────────────────────────────────────────────────────────
@@ -63,11 +65,21 @@ def documents() -> list[Document]:
     return [
         Document(
             page_content="Brake pad replacement",
-            metadata={"jobLineStatus": "AUTHORISED", "job_status_date": "2024-03-15"},
+            metadata={
+                "jobLineStatus": "AUTHORISED",
+                "job_status_date": "2024-03-15",
+                "repair_cost": 120.0,
+                "job_status_updated_by_user": "john.smith",
+            },
         ),
         Document(
             page_content="Oil and filter change",
-            metadata={"jobLineStatus": "NOT AUTHORISED", "job_status_date": "2024-01-10"},
+            metadata={
+                "jobLineStatus": "NOT AUTHORISED",
+                "job_status_date": "2024-01-10",
+                "repair_cost": 45.0,
+                "job_status_updated_by_user": "jane.doe",
+            },
         ),
     ]
 
@@ -78,15 +90,9 @@ def fake_loader(documents: list[Document]) -> FakeDocumentLoader:
 
 
 @pytest.fixture()
-def fake_llm() -> FakeLLMService:
-    return FakeLLMService(reply="The cost is £80.")
-
-
-@pytest.fixture()
-def graph(fake_loader: FakeDocumentLoader, fake_llm: FakeLLMService) -> RAGGraph:
+def graph(fake_loader: FakeDocumentLoader) -> RAGGraph:
     return RAGGraph(
-        llm_service=fake_llm,
-        loader_factory=lambda model, make: fake_loader,
+        loader_factory=lambda model, make, job_cost: fake_loader,
         embeddings=FakeEmbeddings(),
         vector_store_factory=lambda docs, emb: FakeVectorStore(docs),
     )
@@ -97,6 +103,7 @@ def _base_state(**overrides) -> RAGState:
     state: RAGState = {
         "question":        "A 'brake pad replacement' repair has been submitted.",
         "job_title":       "brake pad replacement",
+        "job_cost":        150.0,
         "make":            "Ford",
         "model":           "Ford Focus",
         "documents":       [],
@@ -110,44 +117,39 @@ def _base_state(**overrides) -> RAGState:
 # ── RAGGraph.run ───────────────────────────────────────────────────────────────
 
 def test_run_returns_string(graph: RAGGraph) -> None:
-    result = graph.run("question", job_title="brake pads", model="Ford Focus", make="Ford")
+    result = graph.run("question", job_title="brake pads", model="Ford Focus", make="Ford", job_cost=150.0)
     assert isinstance(result, str)
 
 
-def test_run_returns_llm_answer(graph: RAGGraph, fake_llm: FakeLLMService) -> None:
-    fake_llm.reply = "Brake pads cost £80."
-    result = graph.run("question", job_title="brake pads", model="Ford Focus", make="Ford")
-    assert result == "Brake pads cost £80."
+def test_run_returns_valid_json(graph: RAGGraph) -> None:
+    result = graph.run("question", job_title="brake pads", model="Ford Focus", make="Ford", job_cost=150.0)
+    parsed = json.loads(result)
+    assert "reasoning" in parsed
+    assert "verdict" in parsed
 
 
 def test_run_calls_loader_once(graph: RAGGraph, fake_loader: FakeDocumentLoader) -> None:
-    graph.run("question", job_title="brake pads", model="Ford Focus", make="Ford")
+    graph.run("question", job_title="brake pads", model="Ford Focus", make="Ford", job_cost=150.0)
     assert fake_loader.load_call_count == 1
-
-
-def test_run_calls_llm(graph: RAGGraph, fake_llm: FakeLLMService) -> None:
-    graph.run("question", job_title="brake pads", model="Ford Focus", make="Ford")
-    assert fake_llm.received_prompt is not None
 
 
 # ── _load node ─────────────────────────────────────────────────────────────────
 
-def test_load_uses_model_and_make_from_state(fake_llm: FakeLLMService) -> None:
-    received: list[tuple[str, str]] = []
+def test_load_uses_model_make_and_job_cost_from_state() -> None:
+    received: list[tuple[str, str, float]] = []
 
-    def capturing_factory(model: str, make: str) -> DocumentLoader:
-        received.append((model, make))
+    def capturing_factory(model: str, make: str, job_cost: float) -> DocumentLoader:
+        received.append((model, make, job_cost))
         return FakeDocumentLoader()
 
     graph = RAGGraph(
-        llm_service=fake_llm,
         loader_factory=capturing_factory,
         embeddings=FakeEmbeddings(),
         vector_store_factory=lambda docs, emb: FakeVectorStore(docs),
     )
-    graph._load(_base_state(model="BMW X5", make="BMW"))
+    graph._load(_base_state(model="BMW X5", make="BMW", job_cost=200.0))
 
-    assert received == [("BMW X5", "BMW")]
+    assert received == [("BMW X5", "BMW", 200.0)]
 
 
 def test_load_returns_documents_from_loader(
@@ -157,10 +159,9 @@ def test_load_returns_documents_from_loader(
     assert result["documents"] == documents
 
 
-def test_load_returns_empty_list_when_no_rows(fake_llm: FakeLLMService) -> None:
+def test_load_returns_empty_list_when_no_rows() -> None:
     graph = RAGGraph(
-        llm_service=fake_llm,
-        loader_factory=lambda m, mk: FakeDocumentLoader(documents=[]),
+        loader_factory=lambda m, mk, jc: FakeDocumentLoader(documents=[]),
         embeddings=FakeEmbeddings(),
         vector_store_factory=lambda docs, emb: FakeVectorStore(docs),
     )
@@ -171,7 +172,7 @@ def test_load_returns_empty_list_when_no_rows(fake_llm: FakeLLMService) -> None:
 # ── _retrieve node ─────────────────────────────────────────────────────────────
 
 def test_retrieve_uses_job_title_not_full_question(
-    fake_llm: FakeLLMService, documents: list[Document]
+    documents: list[Document],
 ) -> None:
     """FAISS search must use the bare job_title, not the verbose question string."""
     captured_store: list[FakeVectorStore] = []
@@ -182,8 +183,7 @@ def test_retrieve_uses_job_title_not_full_question(
         return store
 
     graph = RAGGraph(
-        llm_service=fake_llm,
-        loader_factory=lambda m, mk: FakeDocumentLoader(documents=documents),
+        loader_factory=lambda m, mk, jc: FakeDocumentLoader(documents=documents),
         embeddings=FakeEmbeddings(),
         vector_store_factory=capturing_factory,
     )
@@ -223,98 +223,413 @@ def test_retrieve_returns_at_most_top_k(graph: RAGGraph) -> None:
     assert len(result["relevant_chunks"]) <= settings.retrieval_top_k
 
 
-# ── _generate node ─────────────────────────────────────────────────────────────
+def test_retrieve_filters_out_dissimilar_chunks() -> None:
+    """Chunks with score > best_score + _SIMILARITY_SCORE_BUFFER are excluded."""
+    similar_doc   = Document(page_content="fire extinguisher", metadata={"jobLineStatus": "AUTHORISED"})
+    dissimilar_doc = Document(page_content="1123",             metadata={"jobLineStatus": "AUTHORISED"})
 
-def test_generate_includes_question_in_prompt(
-    graph: RAGGraph, fake_llm: FakeLLMService, documents: list[Document]
+    class ScoreFakeVectorStore:
+        def similarity_search_with_score(
+            self, query: str, k: int = 5
+        ) -> list[tuple[Document, float]]:
+            # similar_doc is a good match; dissimilar_doc is clearly beyond the buffer
+            return [
+                (similar_doc,   0.0),
+                (dissimilar_doc, 0.0 + _SIMILARITY_SCORE_BUFFER + 0.01),
+            ]
+
+    graph = RAGGraph(
+        loader_factory=lambda m, mk, jc: FakeDocumentLoader(documents=[similar_doc, dissimilar_doc]),
+        embeddings=FakeEmbeddings(),
+        vector_store_factory=lambda docs, emb: ScoreFakeVectorStore(),
+    )
+    result = graph._retrieve(_base_state(documents=[similar_doc, dissimilar_doc]))
+    assert result["relevant_chunks"] == [similar_doc]
+
+
+# ── _generate node — no-chunks fallback ───────────────────────────────────────
+
+def test_generate_returns_not_authorised_when_no_chunks(graph: RAGGraph) -> None:
+    result = graph._generate(_base_state(relevant_chunks=[]))
+    parsed = json.loads(result["answer"])
+    assert parsed["verdict"] == "NOT AUTHORISED"
+
+
+def test_generate_mentions_no_records_when_no_chunks(graph: RAGGraph) -> None:
+    result = graph._generate(_base_state(relevant_chunks=[]))
+    parsed = json.loads(result["answer"])
+    assert "no similar past repair records" in parsed["reasoning"].lower()
+
+
+# ── _generate node — latest-date-wins logic (within similar records) ──────────
+
+def test_generate_verdict_authorised_when_latest_record_is_authorised(
+    graph: RAGGraph,
 ) -> None:
-    graph._generate(_base_state(
-        question="A brake pad replacement has been submitted.",
-        relevant_chunks=documents,
-    ))
-    assert "A brake pad replacement has been submitted." in fake_llm.received_prompt
+    """Most recent record is AUTHORISED → verdict is AUTHORISED."""
+    chunks = [
+        Document(page_content="windscreen", metadata={
+            "jobLineStatus": "AUTHORISED",
+            "job_status_date": "2024-06-01",
+            "job_status_updated_by_user": "alice",
+            "repair_cost": 200.0,
+        }),
+        Document(page_content="windscreen", metadata={
+            "jobLineStatus": "NOT AUTHORISED",
+            "job_status_date": "2024-05-01",
+            "job_status_updated_by_user": "bob",
+            "repair_cost": 200.0,
+        }),
+    ]
+    result = graph._generate(_base_state(relevant_chunks=chunks))
+    parsed = json.loads(result["answer"])
+    assert parsed["verdict"] == "AUTHORISED"
 
 
-def test_generate_includes_repair_description_in_prompt(
-    graph: RAGGraph, fake_llm: FakeLLMService, documents: list[Document]
+def test_generate_verdict_not_authorised_when_latest_record_is_declined(
+    graph: RAGGraph,
 ) -> None:
-    graph._generate(_base_state(relevant_chunks=documents))
-    assert "Brake pad replacement" in fake_llm.received_prompt
-    assert "Oil and filter change" in fake_llm.received_prompt
+    """Most recent record is NOT AUTHORISED → verdict is NOT AUTHORISED."""
+    chunks = [
+        Document(page_content="windscreen", metadata={
+            "jobLineStatus": "NOT AUTHORISED",
+            "job_status_date": "2024-06-01",
+            "job_status_updated_by_user": "bob",
+            "repair_cost": 200.0,
+        }),
+        Document(page_content="windscreen", metadata={
+            "jobLineStatus": "AUTHORISED",
+            "job_status_date": "2024-05-01",
+            "job_status_updated_by_user": "alice",
+            "repair_cost": 200.0,
+        }),
+    ]
+    result = graph._generate(_base_state(relevant_chunks=chunks))
+    parsed = json.loads(result["answer"])
+    assert parsed["verdict"] == "NOT AUTHORISED"
 
 
-def test_generate_includes_job_line_status_in_prompt(
-    graph: RAGGraph, fake_llm: FakeLLMService, documents: list[Document]
+def test_generate_uses_latest_date_record_not_first_in_list(graph: RAGGraph) -> None:
+    """The decision is based on the most recent date, not the list position."""
+    chunks = [
+        # comes first in the list but has an older date
+        Document(page_content="windscreen", metadata={
+            "jobLineStatus": "NOT AUTHORISED",
+            "job_status_date": "2024-01-01",
+            "job_status_updated_by_user": "old-user",
+            "repair_cost": 200.0,
+        }),
+        # newer date — must win
+        Document(page_content="windscreen", metadata={
+            "jobLineStatus": "AUTHORISED",
+            "job_status_date": "2024-12-31",
+            "job_status_updated_by_user": "new-user",
+            "repair_cost": 200.0,
+        }),
+    ]
+    result = graph._generate(_base_state(relevant_chunks=chunks))
+    parsed = json.loads(result["answer"])
+    assert parsed["verdict"] == "AUTHORISED"
+    assert "new-user" in parsed["reasoning"]
+
+
+def test_generate_reasoning_includes_job_status_updated_by_user(graph: RAGGraph) -> None:
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-01",
+        "job_status_updated_by_user": "john.smith",
+        "repair_cost": 200.0,
+    })]
+    result = graph._generate(_base_state(relevant_chunks=chunks))
+    assert "john.smith" in json.loads(result["answer"])["reasoning"]
+
+
+def test_generate_reasoning_includes_job_status_date(graph: RAGGraph) -> None:
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-15",
+        "job_status_updated_by_user": "alice",
+        "repair_cost": 200.0,
+    })]
+    result = graph._generate(_base_state(relevant_chunks=chunks))
+    assert "2024-06-15" in json.loads(result["answer"])["reasoning"]
+
+
+def test_generate_authorised_reasoning_format(graph: RAGGraph) -> None:
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-15",
+        "job_status_updated_by_user": "alice",
+        "repair_cost": 200.0,
+    })]
+    result = graph._generate(_base_state(relevant_chunks=chunks))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert reasoning == "Similar job has been authorised by alice on 2024-06-15."
+
+
+def test_generate_declined_reasoning_format(graph: RAGGraph) -> None:
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "NOT AUTHORISED",
+        "job_status_date": "2024-06-15",
+        "job_status_updated_by_user": "bob",
+    })]
+    result = graph._generate(_base_state(relevant_chunks=chunks))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert reasoning == "Similar job was declined by bob on 2024-06-15."
+
+
+def test_generate_omits_user_part_when_missing(graph: RAGGraph) -> None:
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-15",
+        "repair_cost": 200.0,
+    })]
+    result = graph._generate(_base_state(relevant_chunks=chunks))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert reasoning == "Similar job has been authorised on 2024-06-15."
+
+
+def test_generate_omits_date_part_when_missing(graph: RAGGraph) -> None:
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_updated_by_user": "alice",
+        "repair_cost": 200.0,
+    })]
+    result = graph._generate(_base_state(relevant_chunks=chunks))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert reasoning == "Similar job has been authorised by alice."
+
+
+def test_generate_answer_is_valid_json(
+    graph: RAGGraph, documents: list[Document]
 ) -> None:
-    graph._generate(_base_state(relevant_chunks=documents))
-    assert "AUTHORISED" in fake_llm.received_prompt
-
-
-def test_generate_includes_job_status_date_in_prompt(
-    graph: RAGGraph, fake_llm: FakeLLMService, documents: list[Document]
-) -> None:
-    graph._generate(_base_state(relevant_chunks=documents))
-    assert "2024-03-15" in fake_llm.received_prompt
-
-
-def test_generate_prompt_instructs_use_only_retrieved_records(
-    graph: RAGGraph, fake_llm: FakeLLMService, documents: list[Document]
-) -> None:
-    graph._generate(_base_state(relevant_chunks=documents))
-    assert "SOLELY" in fake_llm.received_prompt
-
-
-def test_generate_prompt_prohibits_inventing_data(
-    graph: RAGGraph, fake_llm: FakeLLMService, documents: list[Document]
-) -> None:
-    graph._generate(_base_state(relevant_chunks=documents))
-    assert "do not invent" in fake_llm.received_prompt.lower()
-
-
-def test_generate_returns_llm_reply(
-    graph: RAGGraph, fake_llm: FakeLLMService, documents: list[Document]
-) -> None:
-    fake_llm.reply = "The answer is 42."
     result = graph._generate(_base_state(relevant_chunks=documents))
-    assert result["answer"] == "The answer is 42."
+    parsed = json.loads(result["answer"])
+    assert "reasoning" in parsed
+    assert parsed["verdict"] in ("AUTHORISED", "NOT AUTHORISED")
 
 
-def test_generate_uses_fallback_context_when_no_chunks(
-    graph: RAGGraph, fake_llm: FakeLLMService
-) -> None:
-    graph._generate(_base_state(relevant_chunks=[]))
-    assert "No similar past repair records" in fake_llm.received_prompt
+# ── _generate node — plural messaging (multiple similar records) ───────────────
+
+def _two_declined_chunks() -> list[Document]:
+    return [
+        Document(page_content="windscreen", metadata={
+            "jobLineStatus": "NOT AUTHORISED",
+            "job_status_date": "2024-06-01",
+            "job_status_updated_by_user": "allen.smith",
+        }),
+        Document(page_content="windscreen", metadata={
+            "jobLineStatus": "NOT AUTHORISED",
+            "job_status_date": "2024-03-01",
+            "job_status_updated_by_user": "bob",
+        }),
+    ]
 
 
-def test_generate_prompt_instructs_not_authorised_verdict(
-    graph: RAGGraph, fake_llm: FakeLLMService
-) -> None:
-    graph._generate(_base_state(relevant_chunks=[]))
-    assert "NOT AUTHORISED" in fake_llm.received_prompt
+def _two_authorised_chunks() -> list[Document]:
+    return [
+        Document(page_content="windscreen", metadata={
+            "jobLineStatus": "AUTHORISED",
+            "job_status_date": "2024-06-01",
+            "job_status_updated_by_user": "allen.smith",
+            "repair_cost": 200.0,
+        }),
+        Document(page_content="windscreen", metadata={
+            "jobLineStatus": "AUTHORISED",
+            "job_status_date": "2024-03-01",
+            "job_status_updated_by_user": "bob",
+            "repair_cost": 200.0,
+        }),
+    ]
 
 
-def test_generate_prompt_requests_json_output(
-    graph: RAGGraph, fake_llm: FakeLLMService, documents: list[Document]
-) -> None:
-    """Prompt must instruct the model to respond with a JSON object."""
-    graph._generate(_base_state(relevant_chunks=documents))
-    assert "JSON" in fake_llm.received_prompt
+def test_generate_plural_declined_message_when_multiple_chunks(graph: RAGGraph) -> None:
+    result = graph._generate(_base_state(relevant_chunks=_two_declined_chunks()))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert reasoning.startswith("Similar jobs were declined.")
 
 
-def test_generate_includes_make_and_model_in_prompt(
-    graph: RAGGraph, fake_llm: FakeLLMService, documents: list[Document]
-) -> None:
-    graph._generate(_base_state(make="Toyota", model="Corolla", relevant_chunks=documents))
-    assert "Toyota" in fake_llm.received_prompt
-    assert "Corolla" in fake_llm.received_prompt
+def test_generate_plural_declined_includes_latest_user_and_date(graph: RAGGraph) -> None:
+    result = graph._generate(_base_state(relevant_chunks=_two_declined_chunks()))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert "allen.smith" in reasoning
+    assert "2024-06-01" in reasoning
+
+
+def test_generate_plural_authorised_message_when_multiple_chunks(graph: RAGGraph) -> None:
+    result = graph._generate(_base_state(relevant_chunks=_two_authorised_chunks()))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert reasoning.startswith("Similar jobs have been authorised.")
+
+
+def test_generate_plural_authorised_includes_latest_user_and_date(graph: RAGGraph) -> None:
+    result = graph._generate(_base_state(relevant_chunks=_two_authorised_chunks()))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert "allen.smith" in reasoning
+    assert "2024-06-01" in reasoning
+
+
+def test_generate_singular_message_when_single_chunk_declined(graph: RAGGraph) -> None:
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "NOT AUTHORISED",
+        "job_status_date": "2024-06-15",
+        "job_status_updated_by_user": "bob",
+    })]
+    reasoning = json.loads(graph._generate(_base_state(relevant_chunks=chunks))["answer"])["reasoning"]
+    assert reasoning == "Similar job was declined by bob on 2024-06-15."
+
+
+def test_generate_singular_message_when_single_chunk_authorised(graph: RAGGraph) -> None:
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-15",
+        "job_status_updated_by_user": "alice",
+        "repair_cost": 200.0,
+    })]
+    reasoning = json.loads(graph._generate(_base_state(relevant_chunks=chunks))["answer"])["reasoning"]
+    assert reasoning == "Similar job has been authorised by alice on 2024-06-15."
+
+
+# ── _generate node — cost-ratio guard ────────────────────────────────────────
+
+def test_generate_not_authorised_when_cost_exceeds_tolerance(graph: RAGGraph) -> None:
+    """Submitted cost > historical * _COST_TOLERANCE_MULTIPLIER → NOT AUTHORISED."""
+    historical = 9999.0
+    submitted  = historical * _COST_TOLERANCE_MULTIPLIER + 0.01  # just over the limit
+    chunks = [Document(page_content="fire extinguisher", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-01",
+        "repair_cost": historical,
+        "job_status_updated_by_user": "alice",
+    })]
+    result = graph._generate(_base_state(job_cost=submitted, relevant_chunks=chunks))
+    parsed = json.loads(result["answer"])
+    assert parsed["verdict"] == "NOT AUTHORISED"
+
+
+def test_generate_cost_exceeded_reasoning_mentions_both_costs(graph: RAGGraph) -> None:
+    chunks = [Document(page_content="fire extinguisher", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-01",
+        "repair_cost": 9999.0,
+        "job_status_updated_by_user": "alice",
+    })]
+    result = graph._generate(_base_state(job_cost=50000.0, relevant_chunks=chunks))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert "50000.00" in reasoning
+    assert "9999.00" in reasoning
+
+
+def test_generate_cost_exceeded_reasoning_mentions_user_and_date(graph: RAGGraph) -> None:
+    chunks = [Document(page_content="fire extinguisher", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-01",
+        "repair_cost": 9999.0,
+        "job_status_updated_by_user": "alice",
+    })]
+    result = graph._generate(_base_state(job_cost=50000.0, relevant_chunks=chunks))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert "alice" in reasoning
+    assert "2024-06-01" in reasoning
+
+
+def test_generate_authorised_when_cost_within_tolerance(graph: RAGGraph) -> None:
+    """Submitted cost at exactly 2× historical is still authorised."""
+    historical = 9999.0
+    submitted  = historical * _COST_TOLERANCE_MULTIPLIER  # exactly at the limit
+    chunks = [Document(page_content="fire extinguisher", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-01",
+        "repair_cost": historical,
+        "job_status_updated_by_user": "alice",
+    })]
+    result = graph._generate(_base_state(job_cost=submitted, relevant_chunks=chunks))
+    parsed = json.loads(result["answer"])
+    assert parsed["verdict"] == "AUTHORISED"
+
+
+def test_generate_not_authorised_when_repair_cost_missing_and_job_cost_positive(graph: RAGGraph) -> None:
+    """If the historical record has no repair_cost and job_cost > 0, cost cannot be verified → NOT AUTHORISED."""
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-01",
+        "job_status_updated_by_user": "alice",
+        # no repair_cost key
+    })]
+    result = graph._generate(_base_state(job_cost=999999.0, relevant_chunks=chunks))
+    parsed = json.loads(result["answer"])
+    assert parsed["verdict"] == "NOT AUTHORISED"
+
+
+def test_generate_not_authorised_reasoning_mentions_missing_cost(graph: RAGGraph) -> None:
+    """Reasoning should explain that the historical cost is missing."""
+    chunks = [Document(page_content="fire extinguisher", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-01",
+        "job_status_updated_by_user": "alice",
+    })]
+    result = graph._generate(_base_state(job_cost=50000.0, relevant_chunks=chunks))
+    reasoning = json.loads(result["answer"])["reasoning"]
+    assert "no historical repair cost" in reasoning.lower()
+
+
+def test_generate_authorised_when_repair_cost_missing_and_job_cost_zero(graph: RAGGraph) -> None:
+    """If job_cost is 0, the cost check is bypassed even when repair_cost is absent."""
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-01",
+        "job_status_updated_by_user": "alice",
+        # no repair_cost key
+    })]
+    result = graph._generate(_base_state(job_cost=0.0, relevant_chunks=chunks))
+    parsed = json.loads(result["answer"])
+    assert parsed["verdict"] == "AUTHORISED"
+
+
+def test_generate_skips_cost_check_when_job_cost_is_zero(graph: RAGGraph) -> None:
+    """A zero job_cost request bypasses the cost comparison."""
+    chunks = [Document(page_content="windscreen", metadata={
+        "jobLineStatus": "AUTHORISED",
+        "job_status_date": "2024-06-01",
+        "repair_cost": 9999.0,
+        "job_status_updated_by_user": "alice",
+    })]
+    result = graph._generate(_base_state(job_cost=0.0, relevant_chunks=chunks))
+    parsed = json.loads(result["answer"])
+    assert parsed["verdict"] == "AUTHORISED"
+
+
+# ── _is_authorised_status ──────────────────────────────────────────────────────
+
+def test_is_authorised_status_authorised_uppercase() -> None:
+    assert _is_authorised_status("AUTHORISED") is True
+
+
+def test_is_authorised_status_authorised_mixed_case() -> None:
+    assert _is_authorised_status("Authorised") is True
+
+
+def test_is_authorised_status_not_authorised() -> None:
+    assert _is_authorised_status("NOT AUTHORISED") is False
+
+
+def test_is_authorised_status_declined() -> None:
+    assert _is_authorised_status("Declined") is False
+
+
+def test_is_authorised_status_empty() -> None:
+    assert _is_authorised_status("") is False
+
+
+def test_is_authorised_status_unknown() -> None:
+    assert _is_authorised_status("PENDING") is False
 
 
 # ── get_rag_graph singleton ────────────────────────────────────────────────────
 
 def test_get_rag_graph_returns_same_instance() -> None:
-    with patch("rag.graph.get_llm_service"):
-        get_rag_graph.cache_clear()
-        a = get_rag_graph()
-        b = get_rag_graph()
-        assert a is b
-        get_rag_graph.cache_clear()
+    get_rag_graph.cache_clear()
+    a = get_rag_graph()
+    b = get_rag_graph()
+    assert a is b
+    get_rag_graph.cache_clear()

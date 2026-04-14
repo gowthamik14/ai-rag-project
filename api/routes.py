@@ -56,6 +56,7 @@ def get_authorised_knowledge(
         job_title=req.job_title,
         model=req.model,
         make=req.make,
+        job_cost=req.job_cost,
     )
 
     try:
