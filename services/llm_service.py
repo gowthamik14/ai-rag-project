@@ -26,6 +26,8 @@ class OllamaLLMService(LLMService):
         self._llm = ChatOllama(
             model=settings.llm_model,
             base_url=settings.ollama_base_url,
+            format="json",   # forces Ollama to emit valid JSON — no markdown fences or prose
+            temperature=0,   # deterministic output — same input always produces same result
         )
 
     def chat(self, message: str) -> str:

@@ -42,7 +42,10 @@ class ErrorRAGGraph(BaseRAGGraph):
 
 @pytest.fixture()
 def fake_graph() -> FakeRAGGraph:
-    return FakeRAGGraph(knowledge='{"reasoning": "Brake pads are covered.", "verdict": "AUTHORISED"}')
+    return FakeRAGGraph(knowledge=(
+        '{"reasoning": "Brake pads are covered.", "verdict": "AUTHORISED",'
+        ' "last_updated_by": "john.smith", "last_updated_date": "2024-03-15"}'
+    ))
 
 
 @pytest.fixture()
@@ -274,3 +277,46 @@ def test_non_numeric_cost_returns_422(client: TestClient) -> None:
 def test_rag_graph_error_returns_500(error_client: TestClient) -> None:
     response = error_client.post("/authorised-knowledge", json=VALID_PAYLOAD)
     assert response.status_code == 500
+
+
+# ── last updated attribution ───────────────────────────────────────────────────
+
+def test_response_contains_last_updated_by_field(client: TestClient) -> None:
+    response = client.post("/authorised-knowledge", json=VALID_PAYLOAD)
+    assert "lastUpdatedBy" in response.json()
+
+
+def test_response_contains_last_updated_date_field(client: TestClient) -> None:
+    response = client.post("/authorised-knowledge", json=VALID_PAYLOAD)
+    assert "lastUpdatedDate" in response.json()
+
+
+def test_last_updated_by_extracted_from_rag_response(
+    client: TestClient, fake_graph: FakeRAGGraph
+) -> None:
+    fake_graph.knowledge = (
+        '{"reasoning": "Approved.", "verdict": "AUTHORISED",'
+        ' "last_updated_by": "alice", "last_updated_date": "2024-06-01"}'
+    )
+    response = client.post("/authorised-knowledge", json=VALID_PAYLOAD)
+    assert response.json()["lastUpdatedBy"] == "alice"
+
+
+def test_last_updated_date_extracted_from_rag_response(
+    client: TestClient, fake_graph: FakeRAGGraph
+) -> None:
+    fake_graph.knowledge = (
+        '{"reasoning": "Approved.", "verdict": "AUTHORISED",'
+        ' "last_updated_by": "alice", "last_updated_date": "2024-06-01"}'
+    )
+    response = client.post("/authorised-knowledge", json=VALID_PAYLOAD)
+    assert response.json()["lastUpdatedDate"] == "2024-06-01"
+
+
+def test_last_updated_fields_empty_when_not_in_response(
+    client: TestClient, fake_graph: FakeRAGGraph
+) -> None:
+    fake_graph.knowledge = '{"reasoning": "Approved.", "verdict": "AUTHORISED"}'
+    response = client.post("/authorised-knowledge", json=VALID_PAYLOAD)
+    assert response.json()["lastUpdatedBy"] == ""
+    assert response.json()["lastUpdatedDate"] == ""

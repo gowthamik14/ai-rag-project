@@ -1,6 +1,10 @@
+import logging
 import uvicorn
 from api.app import create_app
 from config.settings import settings
+
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("rag.graph").setLevel(logging.DEBUG)
 
 app = create_app()
 

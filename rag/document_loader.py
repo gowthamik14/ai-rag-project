@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -12,6 +13,22 @@ from config.settings import settings
 
 
 _BIGQUERY_SCOPES = ["https://www.googleapis.com/auth/bigquery"]
+
+# Only allow characters that are safe to embed directly in a SQL string literal.
+# Vehicle make/model names legitimately contain letters, digits, spaces, and hyphens.
+_SQL_SAFE_RE = re.compile(r"^[A-Za-z0-9 \-]+$")
+
+
+def _validate_sql_string(value: str, field_name: str) -> str:
+    """Raise ValueError if value is empty or contains SQL meta-characters."""
+    if not value:
+        raise ValueError(f"{field_name!r} must not be empty.")
+    if not _SQL_SAFE_RE.match(value):
+        raise ValueError(
+            f"{field_name!r} contains invalid characters. "
+            "Only letters, digits, spaces, and hyphens are allowed."
+        )
+    return value
 
 
 def _build_credentials() -> Optional[Credentials]:
@@ -79,12 +96,13 @@ class BigQueryDocumentLoader(DocumentLoader):
         self._query = query
         self._page_content_columns = page_content_columns
         self._metadata_columns = metadata_columns
+        self._credentials = _build_credentials()  # built once, reused on every load()
 
     def load(self) -> list[Document]:
         loader = BigQueryLoader(
             query=self._query,
             project=settings.gcp_project_id,
-            credentials=_build_credentials(),
+            credentials=self._credentials,
             page_content_columns=self._page_content_columns,
             metadata_columns=self._metadata_columns,
         )
@@ -100,13 +118,37 @@ def create_model_loader(model: str, make: str, job_cost: float) -> DocumentLoade
     Args:
         model:    Vehicle model name (e.g. "Ford Focus").
         make:     Vehicle make (e.g. "Ford").
+        job_cost: Submitted repair cost — used to pre-filter BigQuery to a cost band
+                  (job_cost / 10 .. job_cost * 10) when > 0.
+
+    Raises:
+        ValueError: if make or model contain SQL meta-characters.
     """
+    safe_make  = _validate_sql_string(make,  "make")
+    safe_model = _validate_sql_string(model, "model")
+
+    table = f"`{settings.gcp_project_id}.{settings.bigquery_dataset}.repair_data`"
+    where = (
+        f"LOWER(car_make) = LOWER('{safe_make}') "
+        f"AND LOWER(car_model) = LOWER('{safe_model}')"
+    )
+
+    # Pre-filter to a wide cost band (job_cost / 10 .. job_cost * 10) when
+    # job_cost > 0 to reduce BigQuery scan size.  The broad band deliberately
+    # keeps records that are 10× cheaper or more expensive so that Python's
+    # cost-range check in _evaluate_repair can still fire on out-of-range
+    # submissions without losing all historical context.
+    if job_cost > 0:
+        cost_min = job_cost / 10
+        cost_max = job_cost * 10
+        where += f" AND repair_cost BETWEEN {cost_min} AND {cost_max}"
 
     query = (
-        f"SELECT car_make, car_model, car_variant, repair_description, jobLineStatus, job_status_date, repair_cost, job_status_updated_by_user "
-        f"FROM `{settings.gcp_project_id}.{settings.bigquery_dataset}.repair_data` "
-        f"WHERE LOWER(car_make) = LOWER('{make}') AND LOWER(car_model) = LOWER('{model}') "
-        f"ORDER BY job_status_date DESC"
+        "SELECT car_make, car_model, car_variant, repair_description, "
+        "jobLineStatus, job_status_date, repair_cost, job_status_updated_by_user "
+        f"FROM {table} "
+        f"WHERE {where} "
+        "ORDER BY job_status_date DESC"
     )
     return BigQueryDocumentLoader(
         query=query,
