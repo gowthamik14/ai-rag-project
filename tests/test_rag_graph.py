@@ -119,7 +119,7 @@ def fake_llm() -> FakeLLMService:
 @pytest.fixture()
 def graph(fake_loader: FakeDocumentLoader, fake_llm: FakeLLMService) -> RAGGraph:
     return RAGGraph(
-        loader_factory=lambda model, make, job_cost: fake_loader,
+        loader_factory=lambda model, make: fake_loader,
         embeddings=FakeEmbeddings(),
         vector_store_factory=lambda docs, emb: FakeVectorStore(docs),
         llm_service=fake_llm,
@@ -146,7 +146,7 @@ def _make_graph(
     docs: list[Document] | None = None,
 ) -> RAGGraph:
     return RAGGraph(
-        loader_factory=lambda m, mk, jc: FakeDocumentLoader(documents=docs or []),
+        loader_factory=lambda m, mk: FakeDocumentLoader(documents=docs or []),
         embeddings=FakeEmbeddings(),
         vector_store_factory=lambda chunks, emb: FakeVectorStore(chunks),
         llm_service=llm or FakeLLMService(),
@@ -190,11 +190,11 @@ def test_run_not_authorised_json_includes_reasoning_when_no_documents() -> None:
 
 # ── _load node ─────────────────────────────────────────────────────────────────
 
-def test_load_uses_model_make_and_job_cost_from_state() -> None:
-    received: list[tuple[str, str, float]] = []
+def test_load_uses_model_and_make_from_state() -> None:
+    received: list[tuple[str, str]] = []
 
-    def capturing_factory(model: str, make: str, job_cost: float) -> DocumentLoader:
-        received.append((model, make, job_cost))
+    def capturing_factory(model: str, make: str) -> DocumentLoader:
+        received.append((model, make))
         return FakeDocumentLoader()
 
     graph = RAGGraph(
@@ -205,7 +205,7 @@ def test_load_uses_model_make_and_job_cost_from_state() -> None:
     )
     graph._load(_base_state(model="Crossland X", make="Vauxhall", job_cost=44000.0))
 
-    assert received == [("Crossland X", "Vauxhall", 44000.0)]
+    assert received == [("Crossland X", "Vauxhall")]
 
 
 def test_load_returns_documents_from_loader(
@@ -289,7 +289,7 @@ def test_retrieve_filters_out_dissimilar_chunks() -> None:
             ]
 
     graph = RAGGraph(
-        loader_factory=lambda m, mk, jc: FakeDocumentLoader(documents=[similar_doc, dissimilar_doc]),
+        loader_factory=lambda m, mk: FakeDocumentLoader(documents=[similar_doc, dissimilar_doc]),
         embeddings=FakeEmbeddings(),
         vector_store_factory=lambda docs, emb: ScoreFakeVectorStore(),
         llm_service=FakeLLMService(),

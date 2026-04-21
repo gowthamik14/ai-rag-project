@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Secrets — never bake into the image
+.env
+*.env
+
+# Tests and evaluation (not needed at runtime)
+tests/
+eval/
+eval_results.json
+pytest.ini
+
+# Dev requirements
+requirements.txt
+
+# Editor / OS artefacts
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# CI
+.github/

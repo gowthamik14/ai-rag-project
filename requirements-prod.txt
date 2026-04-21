@@ -1,0 +1,24 @@
+fastapi>=0.111.0
+python-json-logger>=3.2.0
+uvicorn[standard]>=0.29.0
+gunicorn>=22.0.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+python-dotenv>=1.0.0
+
+# langchain
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-ollama>=0.2.0
+langchain-huggingface>=0.1.0
+langchain-text-splitters>=0.3.0
+langgraph>=0.2.0
+
+# vector store + embeddings
+faiss-cpu>=1.8.0
+sentence-transformers>=2.7.0
+torch>=2.3.0
+
+# google
+google-cloud-bigquery>=3.11.0
+google-auth>=2.29.0

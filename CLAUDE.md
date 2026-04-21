@@ -23,6 +23,7 @@
 api/         ← HTTP layer only (routes, request/response models)
 services/    ← one file per external concern (LLM, vector store, etc.)
 config/      ← settings read from environment
+rag/         ← contains data loader and grpah.py (RAG pipeline Documentloader)
 tests/       ← mirrors the source layout
 ```
 

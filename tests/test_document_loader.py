@@ -110,7 +110,7 @@ def test_load_passes_metadata_columns_when_specified() -> None:
 # ── create_model_loader ────────────────────────────────────────────────────
 
 def test_create_model_loader_returns_bigquery_loader() -> None:
-    loader = create_model_loader("Ford Focus", "Ford", job_cost=150.0)
+    loader = create_model_loader("Ford Focus", "Ford")
     assert isinstance(loader, BigQueryDocumentLoader)
 
 
@@ -119,7 +119,7 @@ def test_create_model_loader_query_contains_table_name() -> None:
         mock_settings.gcp_project_id = "proj"
         mock_settings.bigquery_dataset = "ds"
         mock_settings.gcp_sa_client_email = ""  # prevent _build_credentials from running
-        loader = create_model_loader("Ford Focus", "Ford", job_cost=150.0)
+        loader = create_model_loader("Ford Focus", "Ford")
     assert "repair_data" in loader._query
 
 
@@ -128,67 +128,53 @@ def test_create_model_loader_query_contains_project_and_dataset() -> None:
         mock_settings.gcp_project_id = "my-project"
         mock_settings.bigquery_dataset = "my-dataset"
         mock_settings.gcp_sa_client_email = ""  # prevent _build_credentials from running
-        loader = create_model_loader("Ford Focus", "Ford", job_cost=150.0)
+        loader = create_model_loader("Ford Focus", "Ford")
     assert "my-project" in loader._query
     assert "my-dataset" in loader._query
 
 
 def test_create_model_loader_query_contains_model_value() -> None:
-    loader = create_model_loader("Ford Focus", "Ford", job_cost=150.0)
+    loader = create_model_loader("Ford Focus", "Ford")
     assert "Ford Focus" in loader._query
 
 
 def test_create_model_loader_query_contains_make_value() -> None:
-    loader = create_model_loader("Ford Focus", "Ford", job_cost=150.0)
+    loader = create_model_loader("Ford Focus", "Ford")
     assert "Ford" in loader._query
 
 
 def test_create_model_loader_query_uses_lower_for_case_insensitive() -> None:
-    loader = create_model_loader("Ford Focus", "Ford", job_cost=150.0)
+    loader = create_model_loader("Ford Focus", "Ford")
     assert "LOWER" in loader._query
 
 
 def test_create_model_loader_different_vehicles_produce_different_queries() -> None:
-    loader_vauxhall = create_model_loader("CROSSLAND X HATCHBACK", "VAUXHALL", job_cost=150.0)
-    loader_bmw = create_model_loader("BMW X5", "BMW", job_cost=150.0)
+    loader_vauxhall = create_model_loader("CROSSLAND X HATCHBACK", "VAUXHALL", )
+    loader_bmw = create_model_loader("BMW X5", "BMW", )
     assert "CROSSLAND X HATCHBACK" in loader_vauxhall._query
     assert "BMW X5" in loader_bmw._query
     assert loader_vauxhall._query != loader_bmw._query
 
 
 def test_create_model_loader_sets_repair_description_as_page_content() -> None:
-    loader = create_model_loader("Ford Focus", "Ford", job_cost=150.0)
+    loader = create_model_loader("Ford Focus", "Ford")
     assert loader._page_content_columns == ["repair_description"]
 
 
 def test_create_model_loader_includes_job_status_in_metadata() -> None:
-    loader = create_model_loader("Ford Focus", "Ford", job_cost=150.0)
+    loader = create_model_loader("Ford Focus", "Ford")
     assert "jobLineStatus" in loader._metadata_columns
 
 
 def test_create_model_loader_includes_job_status_date_in_metadata() -> None:
-    loader = create_model_loader("Ford Focus", "Ford", job_cost=150.0)
+    loader = create_model_loader("Ford Focus", "Ford")
     assert "job_status_date" in loader._metadata_columns
 
 
 def test_create_model_loader_includes_repair_cost_in_metadata() -> None:
-    loader = create_model_loader("Ford Focus", "Ford", job_cost=150.0)
+    loader = create_model_loader("Ford Focus", "Ford")
     assert "repair_cost" in loader._metadata_columns
 
-
-def test_create_model_loader_query_contains_cost_band_filter() -> None:
-    loader = create_model_loader("Ford Focus", "Ford", job_cost=100.0)
-    # min = 100 * 0.1 = 10.0, max = 100 * 10.0 = 1000.0
-    assert "BETWEEN" in loader._query
-    assert "10.0" in loader._query
-    assert "1000.0" in loader._query
-
-
-def test_create_model_loader_cost_band_scales_with_job_cost() -> None:
-    loader_cheap = create_model_loader("Ford Focus", "Ford", job_cost=50.0)
-    loader_expensive = create_model_loader("Ford Focus", "Ford", job_cost=500.0)
-    assert "5.0" in loader_cheap._query    # 50 * 0.1
-    assert "5000.0" in loader_expensive._query  # 500 * 10
 
 
 # ── _build_credentials ─────────────────────────────────────────────────────

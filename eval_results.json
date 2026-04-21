@@ -1,0 +1,114 @@
+[
+  {
+    "metric": "VerdictAccuracy",
+    "score": 1.0,
+    "details": [
+      {
+        "case": "authorised_cost_in_range",
+        "expected": "AUTHORISED",
+        "actual": "AUTHORISED",
+        "pass": true
+      },
+      {
+        "case": "not_authorised_cost_too_high",
+        "expected": "NOT AUTHORISED",
+        "actual": "NOT AUTHORISED",
+        "pass": true
+      },
+      {
+        "case": "not_authorised_cost_too_low",
+        "expected": "NOT AUTHORISED",
+        "actual": "NOT AUTHORISED",
+        "pass": true
+      },
+      {
+        "case": "not_authorised_majority_declined",
+        "expected": "NOT AUTHORISED",
+        "actual": "NOT AUTHORISED",
+        "pass": true
+      },
+      {
+        "case": "not_authorised_no_records",
+        "expected": "NOT AUTHORISED",
+        "actual": "NOT AUTHORISED",
+        "pass": true
+      }
+    ]
+  },
+  {
+    "metric": "ReasoningCompleteness",
+    "score": 1.0,
+    "details": [
+      {
+        "case": "authorised_cost_in_range",
+        "reasoning": "The submitted cost of \u00a344000.00 for the 50000 Mile Service on the Vauxhall Crossland X is consistent with historical averages, thus maintaining the AUTHORISED status as updated by john.smith on 2024-12-01.",
+        "pass": true,
+        "missing": []
+      },
+      {
+        "case": "not_authorised_cost_too_high",
+        "reasoning": "The submitted cost of \u00a3200000.00 for an annual service is significantly higher than the historical average, leading to the NOT AUTHORISED verdict as updated by western.lease on 2024-11-15.",
+        "pass": true,
+        "missing": []
+      },
+      {
+        "case": "not_authorised_cost_too_low",
+        "reasoning": "The submitted cost of \u00a31000.00 for engine replacement is significantly lower than the historical average, leading to the NOT AUTHORISED verdict as per the rules. Updated by sarah.connor on 2024-03-10.",
+        "pass": true,
+        "missing": []
+      },
+      {
+        "case": "not_authorised_majority_declined",
+        "reasoning": "The brake replacement for the Ford Focus is not authorised due to three out of four recent declined requests, with the most recent update by mike.jones on 2024-12-01.",
+        "pass": true,
+        "missing": []
+      },
+      {
+        "case": "not_authorised_no_records",
+        "pass": true,
+        "missing": [],
+        "skipped": true
+      }
+    ]
+  },
+  {
+    "metric": "RetrievalRelevance",
+    "score": 1.0,
+    "details": [
+      {
+        "case": "authorised_cost_in_range",
+        "pass": true,
+        "retrieved": 2,
+        "precision": 1.0,
+        "irrelevant_chunks": []
+      },
+      {
+        "case": "not_authorised_cost_too_high",
+        "pass": true,
+        "retrieved": 1,
+        "precision": 1.0,
+        "irrelevant_chunks": []
+      },
+      {
+        "case": "not_authorised_cost_too_low",
+        "pass": true,
+        "retrieved": 1,
+        "precision": 1.0,
+        "irrelevant_chunks": []
+      },
+      {
+        "case": "not_authorised_majority_declined",
+        "pass": true,
+        "retrieved": 4,
+        "precision": 1.0,
+        "irrelevant_chunks": []
+      },
+      {
+        "case": "not_authorised_no_records",
+        "pass": true,
+        "skipped": true,
+        "note": "no documents \u2014 retrieve node short-circuits"
+      }
+    ]
+  }
+]

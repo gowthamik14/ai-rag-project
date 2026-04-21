@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from abc import ABC, abstractmethod
 from collections import OrderedDict
@@ -18,12 +17,13 @@ from langgraph.graph import END, StateGraph
 
 from config.settings import settings
 from rag.document_loader import DocumentLoader, create_model_loader
+from utils.logger import get_logger
 
 if TYPE_CHECKING:
     from services.llm_service import LLMService
 
 
-_log = logging.getLogger(__name__)
+_log = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -202,8 +202,17 @@ class RAGGraph(BaseRAGGraph):
 
     def _load(self, state: RAGState) -> dict:
         """Node: fetch Documents from BigQuery filtered by vehicle make and model."""
-        loader = self._loader_factory(state["model"], state["make"], state["job_cost"])
-        return {"documents": loader.load()}
+        _log.info(
+            "load: querying BigQuery",
+            extra={"make": state["make"], "model": state["model"], "job_cost": state["job_cost"]},
+        )
+        loader = self._loader_factory(state["model"], state["make"])
+        docs = loader.load()
+        _log.info(
+            "load: fetched documents",
+            extra={"make": state["make"], "model": state["model"], "document_count": len(docs)},
+        )
+        return {"documents": docs}
 
     def _retrieve(self, state: RAGState) -> dict:
         """Node: chunk documents, build in-memory FAISS, return top-k relevant chunks.
@@ -214,17 +223,29 @@ class RAGGraph(BaseRAGGraph):
         kept, so the LLM context only contains like-for-like repairs.
         """
         if not state["documents"]:
+            _log.warning("retrieve: no documents loaded — skipping vector search",
+                         extra={"make": state["make"], "model": state["model"]})
             return {"relevant_chunks": []}
 
         chunks = self._splitter.split_documents(state["documents"])
         if not chunks:
+            _log.warning("retrieve: document splitting produced no chunks",
+                         extra={"make": state["make"], "model": state["model"]})
             return {"relevant_chunks": []}
 
-        cache_key = (state["make"].lower(), state["model"].lower(), state["job_cost"])
-        if cache_key not in self._vs_cache:
+        _log.info(
+            "retrieve: built chunks",
+            extra={"chunk_count": len(chunks), "job_title": state["job_title"]},
+        )
+
+        cache_key = (state["make"].lower(), state["model"].lower())
+        cache_hit = cache_key in self._vs_cache
+        if not cache_hit:
             self._vs_cache[cache_key] = self._vector_store_factory(chunks, self._embeddings)
             if len(self._vs_cache) > _VS_CACHE_SIZE:
                 self._vs_cache.popitem(last=False)  # evict oldest entry
+        _log.debug("retrieve: vector store", extra={"cache_hit": cache_hit})
+
         vector_store = self._vs_cache[cache_key]
         # Use job_title (bare repair phrase) as the retrieval query — it matches
         # repair_description embeddings far better than the full verbose question.
@@ -232,6 +253,8 @@ class RAGGraph(BaseRAGGraph):
             state["job_title"], k=settings.retrieval_top_k
         )
         if not results:
+            _log.warning("retrieve: similarity search returned no results",
+                         extra={"job_title": state["job_title"]})
             return {"relevant_chunks": []}
 
         best_score = results[0][1]
@@ -239,6 +262,16 @@ class RAGGraph(BaseRAGGraph):
             doc for doc, score in results
             if score <= best_score + _SIMILARITY_SCORE_BUFFER
         ]
+        _log.info(
+            "retrieve: similarity search complete",
+            extra={
+                "job_title":        state["job_title"],
+                "candidates":       len(results),
+                "passed_filter":    len(relevant),
+                "best_score":       round(best_score, 4),
+                "score_threshold":  round(best_score + _SIMILARITY_SCORE_BUFFER, 4),
+            },
+        )
         return {"relevant_chunks": relevant}
 
     def _generate(self, state: RAGState) -> dict:
@@ -260,6 +293,10 @@ class RAGGraph(BaseRAGGraph):
         the most recent record's metadata.
         """
         if not state["relevant_chunks"]:
+            _log.warning(
+                "generate: no relevant chunks — short-circuiting to NOT AUTHORISED",
+                extra={"make": state["make"], "model": state["model"], "job_title": state["job_title"]},
+            )
             return {"answer": json.dumps({
                 "reasoning": "No similar past repair records found for this vehicle.",
                 "verdict": "NOT AUTHORISED",
@@ -304,6 +341,19 @@ class RAGGraph(BaseRAGGraph):
         # verdicts itself.
         cost_assessment, verdict = _evaluate_repair(state["job_cost"], costs, statuses)
 
+        _log.info(
+            "generate: verdict determined",
+            extra={
+                "make":            state["make"],
+                "model":           state["model"],
+                "job_title":       state["job_title"],
+                "job_cost":        state["job_cost"],
+                "verdict":         verdict,
+                "cost_assessment": cost_assessment,
+                "context_records": len(sorted_chunks),
+            },
+        )
+
         prompt = _GENERATE_PROMPT.format(
             make=state["make"],
             model=state["model"],
@@ -316,14 +366,22 @@ class RAGGraph(BaseRAGGraph):
             last_updated_date=last_updated_date or "unknown",
         )
 
-        _log.debug("=== GENERATE PROMPT ===\n%s", prompt)
-        raw      = self._llm_service.chat(prompt)
-        _log.debug("=== LLM RAW RESPONSE ===\n%s", raw)
-        obj      = _parse_llm_response(raw)
+        _log.debug("generate: sending prompt to LLM", extra={"prompt": prompt})
+        raw = self._llm_service.chat(prompt)
+        _log.debug("generate: received LLM response", extra={"raw_response": raw})
+
+        obj = _parse_llm_response(raw)
         reasoning = str(obj.get("reasoning", "")).strip()
 
         if not reasoning:
+            _log.warning("generate: LLM returned empty reasoning — using fallback",
+                         extra={"raw_response": raw})
             reasoning = "Unable to determine reasoning from historical records."
+
+        _log.info(
+            "generate: final answer",
+            extra={"verdict": verdict, "last_updated_by": last_updated_by, "last_updated_date": last_updated_date},
+        )
 
         return {"answer": json.dumps({
             "reasoning":         reasoning,

@@ -1,4 +1,5 @@
 fastapi>=0.111.0
+python-json-logger>=3.2.0
 uvicorn[standard]>=0.29.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
@@ -24,3 +25,11 @@ google-auth>=2.29.0
 # testing
 pytest>=8.2.0
 httpx>=0.27.0
+
+# evaluation (eval/ scripts only — not required for production or unit tests)
+# deepeval pinned to 0.21.78 — newer versions require Python 3.10+
+# ragas is excluded: all 0.1.x versions require langchain-core<0.3 (incompatible
+# with langchain-huggingface 0.3.x), and 0.2.x+ requires Python 3.10+.
+# Retrieval quality is covered by eval/run_eval.py RetrievalRelevance metric instead.
+deepeval==0.21.78
+datasets>=2.20.0

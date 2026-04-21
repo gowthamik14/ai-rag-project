@@ -1,0 +1,87 @@
+services:
+
+  # ── Ollama — local LLM server ─────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama   # persists downloaded models across restarts
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── Pull the LLM model on first start ────────────────────────────────────
+  # Runs once, exits 0, and is not restarted. The api service waits for this
+  # to complete (via depends_on condition: service_completed_successfully).
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: rag_ollama_pull
+    restart: "no"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "${LLM_MODEL:-qwen2.5:14b}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  # ── RAG API ───────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag_api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      # App
+      LOG_LEVEL:         ${LOG_LEVEL:-INFO}
+      WORKERS:           ${WORKERS:-4}
+
+      # LLM — point at the ollama service, not localhost
+      OLLAMA_BASE_URL:   http://ollama:11434
+      LLM_MODEL:         ${LLM_MODEL:-qwen2.5:14b}
+
+      # Embeddings
+      EMBEDDING_MODEL:   ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+
+      # Retrieval
+      RETRIEVAL_TOP_K:   ${RETRIEVAL_TOP_K:-5}
+
+      # CORS — set to your frontend origin(s) in production
+      ALLOWED_ORIGINS:   ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+
+      # BigQuery — inject via .env or your secrets manager
+      GCP_PROJECT_ID:              ${GCP_PROJECT_ID}
+      BIGQUERY_DATASET:            ${BIGQUERY_DATASET}
+      GCP_SA_TYPE:                 ${GCP_SA_TYPE:-service_account}
+      GCP_SA_PRIVATE_KEY_ID:       ${GCP_SA_PRIVATE_KEY_ID}
+      GCP_SA_PRIVATE_KEY:          ${GCP_SA_PRIVATE_KEY}
+      GCP_SA_CLIENT_EMAIL:         ${GCP_SA_CLIENT_EMAIL}
+      GCP_SA_CLIENT_ID:            ${GCP_SA_CLIENT_ID}
+      GCP_SA_AUTH_URI:             ${GCP_SA_AUTH_URI:-https://accounts.google.com/o/oauth2/auth}
+      GCP_SA_TOKEN_URI:            ${GCP_SA_TOKEN_URI:-https://oauth2.googleapis.com/token}
+      GCP_SA_AUTH_PROVIDER_CERT_URL: ${GCP_SA_AUTH_PROVIDER_CERT_URL:-https://www.googleapis.com/oauth2/v1/certs}
+      GCP_SA_CLIENT_CERT_URL:      ${GCP_SA_CLIENT_CERT_URL}
+      GCP_UNIVERSE_DOMAIN:         ${GCP_UNIVERSE_DOMAIN:-googleapis.com}
+
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  ollama_data:

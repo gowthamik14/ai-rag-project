@@ -323,6 +323,52 @@ tests/test_llm_service.py            ← OllamaLLMService
 
 ---
 
+## Running Evaluations
+
+The eval suite runs three offline metrics against a golden dataset of 5 repair cases — no BigQuery connection required.
+
+**Standard run (no Ollama needed):**
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE python -m eval.run_eval
+```
+
+**With DeepEval faithfulness metric (requires Ollama running):**
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE python -m eval.run_eval --deepeval
+```
+
+**Save results to a custom file:**
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE python -m eval.run_eval --output my_results.json
+```
+
+Results are written to `eval_results.json` by default.
+
+> **Note:** The `KMP_DUPLICATE_LIB_OK=TRUE` prefix is required on macOS to avoid an OpenMP conflict between PyTorch and FAISS.
+
+### Metrics
+
+| Metric | What it checks | LLM required |
+|--------|---------------|--------------|
+| **VerdictAccuracy** | `_evaluate_repair()` produces the correct `AUTHORISED` / `NOT AUTHORISED` verdict for each case | No |
+| **ReasoningCompleteness** | The reasoning sentence includes the attribution fields (updated-by user and date) from the retrieved records | No |
+| **RetrievalRelevance** | Retrieved chunks are keyword-relevant to the job title query (precision ≥ 0.5) | No |
+| **DeepEval Faithfulness** | LLM-as-judge checks that the reasoning is grounded in the retrieved context | Yes (Ollama) |
+
+### Golden Dataset
+
+The 5 evaluation cases cover the full decision space:
+
+| Case | Scenario | Expected verdict |
+|------|----------|-----------------|
+| `authorised_cost_in_range` | Cost within historical range, majority AUTHORISED | AUTHORISED |
+| `not_authorised_cost_too_high` | Cost > 2× historical average | NOT AUTHORISED |
+| `not_authorised_cost_too_low` | Cost < ½ historical average | NOT AUTHORISED |
+| `not_authorised_majority_declined` | Majority of past records DECLINED | NOT AUTHORISED |
+| `not_authorised_no_records` | No historical records found | NOT AUTHORISED |
+
+---
+
 ## Supported Qwen Models
 
 | Model | Size | Speed (CPU) |

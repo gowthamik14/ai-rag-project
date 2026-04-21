@@ -109,17 +109,18 @@ class BigQueryDocumentLoader(DocumentLoader):
         return loader.load()
 
 
-def create_model_loader(model: str, make: str, job_cost: float) -> DocumentLoader:
-    """Return a loader that fetches repair history for a specific vehicle make/model.
+def create_model_loader(model: str, make: str) -> DocumentLoader:
+    """Return a loader that fetches all repair history for a specific vehicle make/model.
 
     - page_content  → repair_description (what FAISS embeds for similarity search)
     - metadata      → car_make, car_model, car_variant, jobLineStatus, job_status_date, repair_cost
 
+    All records for the make/model are fetched so that _evaluate_repair() in graph.py
+    can compute an unbiased historical average for the cost-range check.
+
     Args:
-        model:    Vehicle model name (e.g. "Ford Focus").
-        make:     Vehicle make (e.g. "Ford").
-        job_cost: Submitted repair cost — used to pre-filter BigQuery to a cost band
-                  (job_cost / 10 .. job_cost * 10) when > 0.
+        model: Vehicle model name (e.g. "Ford Focus").
+        make:  Vehicle make (e.g. "Ford").
 
     Raises:
         ValueError: if make or model contain SQL meta-characters.
@@ -132,16 +133,6 @@ def create_model_loader(model: str, make: str, job_cost: float) -> DocumentLoade
         f"LOWER(car_make) = LOWER('{safe_make}') "
         f"AND LOWER(car_model) = LOWER('{safe_model}')"
     )
-
-    # Pre-filter to a wide cost band (job_cost / 10 .. job_cost * 10) when
-    # job_cost > 0 to reduce BigQuery scan size.  The broad band deliberately
-    # keeps records that are 10× cheaper or more expensive so that Python's
-    # cost-range check in _evaluate_repair can still fire on out-of-range
-    # submissions without losing all historical context.
-    if job_cost > 0:
-        cost_min = job_cost / 10
-        cost_max = job_cost * 10
-        where += f" AND repair_cost BETWEEN {cost_min} AND {cost_max}"
 
     query = (
         "SELECT car_make, car_model, car_variant, repair_description, "
